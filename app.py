@@ -28,6 +28,7 @@ def get_benchmark(ticker):
         return 'SPY' 
 
 def calculate_return(ticker, start_date):
+    """Pulls data from Yahoo Finance and calculates total return including dividends."""
     try:
         stock = yf.Ticker(ticker)
         hist = stock.history(start=start_date, auto_adjust=True)
@@ -41,50 +42,68 @@ def calculate_return(ticker, start_date):
         return None
 
 def apply_color_logic(val):
+    """Applies your +/- 2% conditional formatting rules with translucent backgrounds."""
     if pd.isna(val) or val == "":
         return ''
     if val > 0.02:
-        return 'background-color: rgba(44, 160, 44, 0.3); font-weight: bold;' 
+        return 'background-color: rgba(44, 160, 44, 0.3); font-weight: bold;' # Translucent Green
     elif val < -0.02:
-        return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;' 
+        return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;' # Translucent Red
     else:
-        return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;' 
+        return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;' # Translucent Gray
 
 # --- SECTION 1: ADD POSITIONS ---
 st.header("1. Add Positions")
 col_upload, col_manual = st.columns(2)
 
 with col_upload:
-    uploaded_file = st.file_uploader("Upload Excel File (.xlsx)", type=['xlsx'])
-    if uploaded_file is not None and st.button("Process Excel File"):
+    uploaded_file = st.file_uploader("Upload Excel/CSV File", type=['xlsx', 'csv'])
+    if uploaded_file is not None and st.button("Process File"):
         try:
-            df = pd.read_excel(uploaded_file)
+            if uploaded_file.name.endswith('.csv'):
+                df = pd.read_csv(uploaded_file, low_memory=False)
+            else:
+                df = pd.read_excel(uploaded_file)
             
-            # Updated mapper to catch your exact system export column names
+            # Map the specific column names from your export
             column_mapping = {
                 'Security Identifier': 'Ticker',
                 'Market Value': 'Amount',
                 'Trade Date': 'Purchase Date'
             }
-            df = df.rename(columns=column_mapping)
             
-            # Keep only the needed columns and drop blank rows
-            df = df[["Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
-            df['Purchase Date'] = pd.to_datetime(df['Purchase Date'])
-            
-            # Combine duplicates: Sum the total amount, and take the earliest date
-            df = df.groupby('Ticker', as_index=False).agg({
-                'Amount': 'sum',
-                'Purchase Date': 'min'
-            })
-            
-            # Auto-assign the benchmark guess
-            df['Benchmark'] = df['Ticker'].apply(get_benchmark)
-            
-            st.session_state.portfolio = pd.concat([st.session_state.portfolio, df], ignore_index=True)
-            st.success("Spreadsheet uploaded and consolidated successfully!")
+            # Check if required columns exist before renaming
+            existing_cols = [col for col in column_mapping.keys() if col in df.columns]
+            if not existing_cols:
+                st.error("Could not find the required columns (Security Identifier, Market Value, Trade Date).")
+            else:
+                df = df.rename(columns=column_mapping)
+                
+                # Keep only needed columns and drop rows without a Ticker
+                df = df[["Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
+                
+                # Clean up data types (handles strings with commas or $ in Market Value)
+                if df['Amount'].dtype == 'object':
+                    df['Amount'] = df['Amount'].astype(str).str.replace(',', '').str.replace('$', '')
+                df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
+                
+                # Clean up dates and drop rows with missing Trade Dates
+                df['Purchase Date'] = pd.to_datetime(df['Purchase Date'], errors='coerce')
+                df = df.dropna(subset=["Purchase Date"]) 
+                
+                # Combine duplicates: Sum the total amount, and take the earliest date
+                df = df.groupby('Ticker', as_index=False).agg({
+                    'Amount': 'sum',
+                    'Purchase Date': 'min'
+                })
+                
+                # Auto-assign the benchmark guess
+                df['Benchmark'] = df['Ticker'].apply(get_benchmark)
+                
+                st.session_state.portfolio = pd.concat([st.session_state.portfolio, df], ignore_index=True)
+                st.success("File uploaded and consolidated successfully!")
         except Exception as e:
-            st.error("Error processing file. Please ensure columns match: Security Identifier, Market Value, Trade Date.")
+            st.error(f"Error processing file: {e}")
 
 with col_manual:
     with st.form("add_position_form"):
@@ -92,7 +111,9 @@ with col_manual:
         new_amount = st.number_input("Amount ($)", min_value=0.0, step=100.0)
         new_date = st.date_input("Date of First Purchase", format="MM/DD/YYYY")
         
-        if st.form_submit_button("Add Single Position") and new_ticker:
+        submitted = st.form_submit_button("Add Single Position")
+        
+        if submitted and new_ticker:
             new_row = pd.DataFrame({
                 "Ticker": [new_ticker],
                 "Amount": [new_amount],
@@ -100,11 +121,11 @@ with col_manual:
                 "Benchmark": [get_benchmark(new_ticker)]
             })
             st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_row], ignore_index=True)
-            st.success(f"Added {new_ticker}!")
+            st.success(f"Successfully added {new_ticker}!")
 
 # --- SECTION 2: MANAGE & EDIT PORTFOLIO ---
 st.header("2. Manage Portfolio")
-st.markdown("Check the box on the left of any row and press **Delete** to remove it. You can also manually correct benchmarks or dates here before running the report.")
+st.markdown("Check the box on the left of any row and press **Delete** to remove it. You can manually correct benchmarks or dates here before running the report.")
 
 # Interactive Data Editor
 edited_portfolio = st.data_editor(
@@ -116,7 +137,7 @@ edited_portfolio = st.data_editor(
         "Amount": st.column_config.NumberColumn("Amount", format="$%.2f")
     }
 )
-# Save any edits (or deletions) back to the session state immediately
+# Save edits back to session state immediately
 st.session_state.portfolio = edited_portfolio
 
 if st.button("Clear Entire Portfolio"):
@@ -133,7 +154,7 @@ if not st.session_state.portfolio.empty:
         display_df = st.session_state.portfolio.copy()
         ticker_perfs, bench_perfs, differences = [], [], []
         
-        with st.spinner('Fetching live market data from Yahoo Finance...'):
+        with st.spinner('Fetching live market data...'):
             for index, row in display_df.iterrows():
                 start_d = row['Purchase Date'].strftime('%Y-%m-%d')
                 
@@ -155,7 +176,7 @@ if not st.session_state.portfolio.empty:
         display_df['Benchmark Return'] = bench_perfs
         display_df['Difference'] = differences
         
-        # Bulletproof Date Format (Zero-width space trick)
+        # THE BULLETPROOF TRICK: Format to exact MM/DD/YYYY and add a zero-width space (\u200b)
         display_df['Purchase Date'] = pd.to_datetime(display_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
         
         format_dict = {
@@ -165,6 +186,7 @@ if not st.session_state.portfolio.empty:
             'Difference': '{:.2%}'
         }
         
+        # Apply all stylings: colors, bold ticker, and 10% larger font
         styled_df = display_df.style.map(
             apply_color_logic, subset=['Difference']
         ).map(
@@ -173,4 +195,5 @@ if not st.session_state.portfolio.empty:
             **{'font-size': '110%'}
         ).format(format_dict, na_rep="Data Unavailable")
         
+        # Display the dataframe as standard text so Streamlit respects the styling
         st.dataframe(styled_df, use_container_width=True)
