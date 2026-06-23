@@ -6,12 +6,10 @@ import datetime
 st.set_page_config(page_title="Portfolio Performance", layout="wide")
 st.title("Portfolio Performance Dashboard")
 
-# Initialize session state so your entries don't disappear when the page refreshes
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = pd.DataFrame(columns=["Ticker", "Amount", "Purchase Date"])
 
 def get_benchmark(ticker):
-    """Maps the entered ticker to its appropriate benchmark."""
     commodities = ['GLD', 'SLV', 'PDBC', 'IAU']
     intl_emerging = ['EEM', 'VWO', 'EPI', 'EFEIX']
     intl_developed = ['EFA', 'VEA', 'SHLD', 'CGW', 'BAESY']
@@ -24,14 +22,11 @@ def get_benchmark(ticker):
     elif ticker_upper in intl_developed:
         return 'EFA'
     else:
-        # Default to S&P 500 ETF for US-based equities
         return 'SPY' 
 
 def calculate_return(ticker, start_date):
-    """Pulls data from Yahoo Finance and calculates total return including dividends."""
     try:
         stock = yf.Ticker(ticker)
-        # auto_adjust=True accounts for dividends and splits automatically
         hist = stock.history(start=start_date, auto_adjust=True)
         if hist.empty:
             return None
@@ -43,18 +38,15 @@ def calculate_return(ticker, start_date):
         return None
 
 def apply_color_logic(val):
-    """Applies your +/- 2% conditional formatting rules."""
     if pd.isna(val) or val == "":
         return ''
     if val > 0.02:
-        color = '#2ca02c' # Green for > +2%
+        return 'background-color: rgba(44, 160, 44, 0.3); font-weight: bold;' 
     elif val < -0.02:
-        color = '#d62728' # Red for < -2%
+        return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;' 
     else:
-        color = '#7f7f7f' # Gray for in between
-    return f'color: {color}; font-weight: bold;'
+        return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;' 
 
-# --- Dashboard Interface ---
 with st.form("add_position_form"):
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -62,7 +54,7 @@ with st.form("add_position_form"):
     with col2:
         new_amount = st.number_input("Amount ($)", min_value=0.0, step=100.0)
     with col3:
-        new_date = st.date_input("Date of First Purchase")
+        new_date = st.date_input("Date of First Purchase", format="MM/DD/YYYY")
         
     submitted = st.form_submit_button("Add Position")
     
@@ -75,7 +67,6 @@ with st.form("add_position_form"):
         st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_row], ignore_index=True)
         st.success(f"Successfully added {new_ticker}!")
 
-# --- Data Processing & Display ---
 if not st.session_state.portfolio.empty:
     st.subheader("Current Holdings")
     
@@ -105,7 +96,9 @@ if not st.session_state.portfolio.empty:
     display_df['Benchmark Return'] = bench_perfs
     display_df['Difference'] = differences
     
-    # Format columns for display
+    # Bulletproof Date Format
+    display_df['Purchase Date'] = pd.to_datetime(display_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
+    
     format_dict = {
         'Amount': '${:,.2f}',
         'Ticker Return': '{:.2%}',
@@ -113,9 +106,12 @@ if not st.session_state.portfolio.empty:
         'Difference': '{:.2%}'
     }
     
-    # Apply the color logic to the Difference column
     styled_df = display_df.style.map(
         apply_color_logic, subset=['Difference']
+    ).map(
+        lambda _: 'font-weight: bold;', subset=['Ticker']
+    ).set_properties(
+        **{'font-size': '110%'}
     ).format(format_dict, na_rep="Data Unavailable")
     
     st.dataframe(styled_df, use_container_width=True)
