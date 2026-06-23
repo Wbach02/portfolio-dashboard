@@ -198,55 +198,50 @@ if not st.session_state.portfolio.empty:
         # Display the dataframe as standard text so Streamlit respects the styling
         st.dataframe(styled_df, use_container_width=True)
 # --- SECTION 4: VISUAL SUMMARY ---
-        st.divider()
-        st.subheader("📊 Portfolio Summary")
+st.divider()
+st.subheader("📊 Portfolio Summary")
+
+# 1. Use the underlying data for calculations (not the text-formatted version)
+# We recreate the performance logic here locally so we don't rely on 'display_df'
+if 'results_df' in st.session_state and st.session_state.results_df is not None:
+    res = st.session_state.results_df # This is your calculated table
+    
+    # Calculate Total Market Value
+    total_value = res['Amount'].sum()
+    
+    # Calculate weighted returns
+    port_weighted_return = (res['Amount'] * res['Ticker Return']).sum() / total_value
+    bench_weighted_return = (res['Amount'] * res['Benchmark Return']).sum() / total_value
+    weighted_diff = port_weighted_return - bench_weighted_return
+    
+    # --- KPI Cards ---
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Portfolio Value", f"${total_value:,.2f}")
+    m2.metric("Weighted Portfolio Return", f"{port_weighted_return:.2%}", delta=f"{weighted_diff:.2%} vs Bench")
+    m3.metric("Weighted Benchmark Return", f"{bench_weighted_return:.2%}")
         
-        # 1. Filter out any rows where Yahoo Finance couldn't find data
-        calc_df = display_df.dropna(subset=['Ticker Return', 'Benchmark Return']).copy()
+    st.write("") 
+    
+    # --- Mathematical Bar Chart ---
+    # We want a clean side-by-side weighted comparison
+    summary_data = pd.DataFrame({
+        "Return": [port_weighted_return, bench_weighted_return]
+    }, index=["Portfolio (Weighted)", "Benchmark (Weighted)"])
+    
+    st.markdown("**Portfolio Aggregate vs. Benchmark Aggregate**")
+    st.bar_chart(summary_data)
+    
+    # --- Time Series Line Chart ---
+    st.divider()
+    st.subheader("📈 Performance Over Time")
+    selected = st.selectbox("Select Ticker:", res['Ticker'].unique())
+    
+    if selected:
+        row = res[res['Ticker'] == selected].iloc[0]
+        ticker_sym, bench_sym = row['Ticker'], row['Benchmark']
+        orig_date = st.session_state.portfolio[st.session_state.portfolio['Ticker'] == ticker_sym]['Purchase Date'].min()
         
-        if not calc_df.empty:
-            # Calculate Total Market Value
-            total_value = calc_df['Amount'].sum()
-            
-            # The 'Sumproduct' Equivalent: (Amount * Return) / Total Value
-            port_weighted_return = (calc_df['Amount'] * calc_df['Ticker Return']).sum() / total_value
-            bench_weighted_return = (calc_df['Amount'] * calc_df['Benchmark Return']).sum() / total_value
-            weighted_diff = port_weighted_return - bench_weighted_return
-            
-            # --- Render KPI Cards ---
-            m1, m2, m3 = st.columns(3)
-            
-            with m1:
-                st.metric(
-                    label="Total Portfolio Value", 
-                    value=f"${total_value:,.2f}"
-                )
-            with m2:
-                st.metric(
-                    label="Weighted Portfolio Return", 
-                    value=f"{port_weighted_return:.2%}", 
-                    delta=f"{weighted_diff:.2%} vs Benchmark",
-                    delta_color="normal" # Automatically colors positive green, negative red
-                )
-            with m3:
-                st.metric(
-                    label="Weighted Benchmark Return", 
-                    value=f"{bench_weighted_return:.2%}"
-                )
-                
-            st.write("") # Adds a little visual spacing
-            
-            # --- Render Performance Bar Chart ---
-            st.markdown("**Asset vs Benchmark Performance**")
-            
-            # Restructure data specifically for Streamlit's native charting
-            chart_df = calc_df[['Ticker', 'Ticker Return', 'Benchmark Return']].set_index('Ticker')
-            
-            # Display interactive bar chart
-            st.bar_chart(chart_df, height=400)
-        
-        # Display interactive line chart
-        st.line_chart(cum_returns)
-        st.caption(f"Tracking cumulative % growth of {ticker_symbol} vs {bench_symbol} since {original_date.strftime('%m/%d/%Y')}.")
-else:
-    st.info("Run the Performance Calculation above to view time-series charts.")
+        data = yf.download([ticker_sym, bench_sym], start=orig_date)
+        if not data.empty:
+            cum_returns = (data['Close'] / data['Close'].iloc[0]) - 1
+            st.line_chart(cum_returns)
