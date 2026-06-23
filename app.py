@@ -197,33 +197,51 @@ if not st.session_state.portfolio.empty:
         
         # Display the dataframe as standard text so Streamlit respects the styling
         st.dataframe(styled_df, use_container_width=True)
-        # --- SECTION 4: TIME-SERIES VISUALS ---
+# --- SECTION 4: PERFORMANCE REPORT & VISUALS ---
 st.divider()
-st.subheader("📈 Performance Over Time")
 
-# We only draw this if the "Run Performance Calculation" button was clicked
-# and we have a display_df ready. 
-if 'display_df' in locals():
-    # Select box to choose which ticker to analyze
-    selected_ticker = st.selectbox("Select a Ticker to view its time-series performance:", display_df['Ticker'].unique())
+if st.session_state.results_df is not None:
+    res = st.session_state.results_df
     
-    if selected_ticker:
-        row = display_df[display_df['Ticker'] == selected_ticker].iloc[0]
-        ticker_symbol = row['Ticker']
-        bench_symbol = row['Benchmark']
+    st.subheader("📊 Weighted Portfolio Comparison")
+    
+    # 1. KPI Metrics
+    total_val = res['Amount'].sum()
+    port_wgt = (res['Amount'] * res['Ticker Return']).sum() / total_val
+    bench_wgt = (res['Amount'] * res['Benchmark Return']).sum() / total_val
+    
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Value", f"${total_val:,.2f}")
+    m2.metric("Portfolio Return", f"{port_wgt:.2%}")
+    m3.metric("Benchmark Return", f"{bench_wgt:.2%}")
+    
+    # 2. Weighted Bar Chart
+    summary_data = pd.DataFrame({
+        "Return": [port_wgt, bench_wgt]
+    }, index=["Portfolio (Weighted)", "Benchmark (Weighted)"])
+    st.bar_chart(summary_data)
+    
+    st.divider()
+    
+    # 3. Time Series (Pinned/Sticky)
+    st.subheader("📈 Performance Over Time")
+    
+    # Use the 'res' dataframe (already calculated)
+    selected = st.selectbox("Select Ticker for Time-Series:", res['Ticker'].unique(), key="ts_select")
+    
+    if selected:
+        row = res[res['Ticker'] == selected].iloc[0]
+        ticker_sym = row['Ticker']
+        bench_sym = row['Benchmark']
+        # Pull original start date from the portfolio data
+        orig_date = st.session_state.portfolio[st.session_state.portfolio['Ticker'] == ticker_sym]['Purchase Date'].min()
         
-        # We need the original purchase date, not the formatted string!
-        # Let's pull it from the session state since display_df is formatted text
-        original_date = st.session_state.portfolio[st.session_state.portfolio['Ticker'] == ticker_symbol].iloc[0]['Purchase Date']
-        
-        # Fetch historical data
-        data = yf.download([ticker_symbol, bench_symbol], start=original_date)
-        
-        # Calculate cumulative return: (Price / Initial Price) - 1
+        data = yf.download([ticker_sym, bench_sym], start=orig_date)
         cum_returns = (data['Close'] / data['Close'].iloc[0]) - 1
-        
-        # Display interactive line chart
         st.line_chart(cum_returns)
-        st.caption(f"Tracking cumulative % growth of {ticker_symbol} vs {bench_symbol} since {original_date.strftime('%m/%d/%Y')}.")
+        st.caption(f"Tracking cumulative growth of {ticker_sym} vs {bench_sym} since {orig_date.strftime('%m/%d/%Y')}.")
+
+    # 4. Data Table
+    st.dataframe(res, use_container_width=True)
 else:
-    st.info("Run the Performance Calculation above to view time-series charts.")
+    st.info("Run the Performance Calculation above to view visuals.")
