@@ -198,29 +198,32 @@ if not st.session_state.portfolio.empty:
         # Display the dataframe as standard text so Streamlit respects the styling
         st.dataframe(styled_df, use_container_width=True)
 # --- SECTION 4: TIME-SERIES VISUALS ---
-        st.divider()
-        st.subheader("📈 Performance Over Time")
+st.divider()
+st.subheader("📈 Performance Over Time")
+
+# We only draw this if the "Run Performance Calculation" button was clicked
+# and we have a display_df ready. 
+if 'display_df' in locals():
+    # Select box to choose which ticker to analyze
+    selected_ticker = st.selectbox("Select a Ticker to view its time-series performance:", display_df['Ticker'].unique())
+    
+    if selected_ticker:
+        row = display_df[display_df['Ticker'] == selected_ticker].iloc[0]
+        ticker_symbol = row['Ticker']
+        bench_symbol = row['Benchmark']
         
-        # Select box to choose which ticker to analyze
-        selected_ticker = st.selectbox("Select a Ticker to view its time-series performance:", calc_df['Ticker'].unique())
+        # We need the original purchase date, not the formatted string!
+        # Let's pull it from the session state since display_df is formatted text
+        original_date = st.session_state.portfolio[st.session_state.portfolio['Ticker'] == ticker_symbol].iloc[0]['Purchase Date']
         
-        if selected_ticker:
-            row = calc_df[calc_df['Ticker'] == selected_ticker].iloc[0]
-            ticker_symbol = row['Ticker']
-            bench_symbol = row['Benchmark']
-            start_d = row['Purchase Date']
-            
-            # Fetch historical data for both
-            data = yf.download([ticker_symbol, bench_symbol], start=start_d)
-            
-            # Calculate cumulative return: (Price / Initial Price) - 1
-            cum_returns = (data['Close'] / data['Close'].iloc[0]) - 1
-            
-            # Display interactive line chart
-            st.line_chart(cum_returns)
-            st.caption(f"This chart tracks the cumulative % growth of {ticker_symbol} vs {bench_symbol} since {start_d}.")
-            # Restructure data specifically for Streamlit's native charting
-            chart_df = calc_df[['Ticker', 'Ticker Return', 'Benchmark Return']].set_index('Ticker')
-            
-            # Display interactive bar chart
-            st.bar_chart(chart_df, height=400)
+        # Fetch historical data
+        data = yf.download([ticker_symbol, bench_symbol], start=original_date)
+        
+        # Calculate cumulative return: (Price / Initial Price) - 1
+        cum_returns = (data['Close'] / data['Close'].iloc[0]) - 1
+        
+        # Display interactive line chart
+        st.line_chart(cum_returns)
+        st.caption(f"Tracking cumulative % growth of {ticker_symbol} vs {bench_symbol} since {original_date.strftime('%m/%d/%Y')}.")
+else:
+    st.info("Run the Performance Calculation above to view time-series charts.")
