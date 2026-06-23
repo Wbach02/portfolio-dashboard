@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import datetime
 
 st.set_page_config(page_title="Portfolio Performance", layout="wide")
 st.title("Portfolio Performance Dashboard")
@@ -59,11 +60,11 @@ with col_upload:
         try:
             df = pd.read_excel(uploaded_file)
             
-            # Smart mapper to catch your specific spreadsheet column names
+            # Updated mapper to catch your exact system export column names
             column_mapping = {
-                'Position': 'Ticker',
-                'Position Amount': 'Amount',
-                'Date of First Purchase': 'Purchase Date'
+                'Security Identifier': 'Ticker',
+                'Market Value': 'Amount',
+                'Trade Date': 'Purchase Date'
             }
             df = df.rename(columns=column_mapping)
             
@@ -71,13 +72,19 @@ with col_upload:
             df = df[["Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
             df['Purchase Date'] = pd.to_datetime(df['Purchase Date'])
             
+            # Combine duplicates: Sum the total amount, and take the earliest date
+            df = df.groupby('Ticker', as_index=False).agg({
+                'Amount': 'sum',
+                'Purchase Date': 'min'
+            })
+            
             # Auto-assign the benchmark guess
             df['Benchmark'] = df['Ticker'].apply(get_benchmark)
             
             st.session_state.portfolio = pd.concat([st.session_state.portfolio, df], ignore_index=True)
-            st.success("Spreadsheet uploaded successfully!")
+            st.success("Spreadsheet uploaded and consolidated successfully!")
         except Exception as e:
-            st.error("Error processing file. Please ensure columns match: Ticker, Amount, Purchase Date.")
+            st.error("Error processing file. Please ensure columns match: Security Identifier, Market Value, Trade Date.")
 
 with col_manual:
     with st.form("add_position_form"):
