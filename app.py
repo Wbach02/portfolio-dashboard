@@ -197,51 +197,70 @@ if not st.session_state.portfolio.empty:
         
         # Display the dataframe as standard text so Streamlit respects the styling
         st.dataframe(styled_df, use_container_width=True)
-# --- SECTION 4: PERFORMANCE REPORT & VISUALS ---
-st.divider()
+import streamlit as st
+import pandas as pd
+import yfinance as yf
 
+st.set_page_config(page_title="Portfolio Performance", layout="wide")
+st.title("Portfolio Performance Dashboard")
+
+# Initialize persistent session state
+if 'portfolio' not in st.session_state:
+    st.session_state.portfolio = pd.DataFrame(columns=["Ticker", "Amount", "Purchase Date", "Benchmark"])
+if 'results_df' not in st.session_state:
+    st.session_state.results_df = None
+
+def get_benchmark(ticker):
+    # (Existing benchmark logic remains the same)
+    commodities = ['GLD', 'SLV', 'PDBC', 'IAU']
+    intl_emerging = ['EEM', 'VWO', 'EPI', 'EFEIX']
+    intl_developed = ['EFA', 'VEA', 'SHLD', 'CGW', 'BAESY', 'VEU', 'EFV']
+    ticker_upper = str(ticker).upper()
+    if ticker_upper in commodities: return 'AGG'
+    elif ticker_upper in intl_emerging: return 'EEM'
+    elif ticker_upper in intl_developed: return 'EFA'
+    else: return 'SPY'
+
+def calculate_return(ticker, start_date):
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(start=start_date, auto_adjust=True)
+        if hist.empty: return None
+        return (hist['Close'].iloc[-1] - hist['Close'].iloc[0]) / hist['Close'].iloc[0]
+    except: return None
+
+# --- SECTION 1 & 2: INPUT & MANAGEMENT ---
+# (Keep your existing File Uploader and Data Editor logic here, ensuring it updates session_state.portfolio)
+
+# --- SECTION 3: CALCULATION ENGINE ---
+if st.button("Run Performance Calculation", type="primary"):
+    with st.spinner('Calculating weighted returns...'):
+        df = st.session_state.portfolio.copy()
+        # Perform calculations and store in session state
+        # ... (Insert your calculation loop here) ...
+        st.session_state.results_df = display_df # Save the calculated table
+
+# --- SECTION 4: VISUALS (Only if results exist) ---
 if st.session_state.results_df is not None:
     res = st.session_state.results_df
     
     st.subheader("📊 Weighted Portfolio Comparison")
     
-    # 1. KPI Metrics
+    # Mathematical aggregation for the Barchart
     total_val = res['Amount'].sum()
     port_wgt = (res['Amount'] * res['Ticker Return']).sum() / total_val
     bench_wgt = (res['Amount'] * res['Benchmark Return']).sum() / total_val
     
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Total Value", f"${total_val:,.2f}")
-    m2.metric("Portfolio Return", f"{port_wgt:.2%}")
-    m3.metric("Benchmark Return", f"{bench_wgt:.2%}")
-    
-    # 2. Weighted Bar Chart
     summary_data = pd.DataFrame({
         "Return": [port_wgt, bench_wgt]
     }, index=["Portfolio (Weighted)", "Benchmark (Weighted)"])
+    
     st.bar_chart(summary_data)
     
     st.divider()
     
-    # 3. Time Series (Pinned/Sticky)
-    st.subheader("📈 Performance Over Time")
+    # Time Series (Now stays pinned!)
+    selected = st.selectbox("Select Ticker for Time-Series:", res['Ticker'].unique())
+    # ... (Insert your Time Series line chart logic here) ...
     
-    # Use the 'res' dataframe (already calculated)
-    selected = st.selectbox("Select Ticker for Time-Series:", res['Ticker'].unique(), key="ts_select")
-    
-    if selected:
-        row = res[res['Ticker'] == selected].iloc[0]
-        ticker_sym = row['Ticker']
-        bench_sym = row['Benchmark']
-        # Pull original start date from the portfolio data
-        orig_date = st.session_state.portfolio[st.session_state.portfolio['Ticker'] == ticker_sym]['Purchase Date'].min()
-        
-        data = yf.download([ticker_sym, bench_sym], start=orig_date)
-        cum_returns = (data['Close'] / data['Close'].iloc[0]) - 1
-        st.line_chart(cum_returns)
-        st.caption(f"Tracking cumulative growth of {ticker_sym} vs {bench_sym} since {orig_date.strftime('%m/%d/%Y')}.")
-
-    # 4. Data Table
-    st.dataframe(res, use_container_width=True)
-else:
-    st.info("Run the Performance Calculation above to view visuals.")
+    st.dataframe(res.style.format(...), use_container_width=True)
