@@ -6,4 +6,4 @@ numpy
 fpdf
 plotly
 Pillow
-kaleido==0.1.0.post1
+kaleido
