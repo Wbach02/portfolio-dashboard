@@ -6,6 +6,7 @@ import numpy as np
 from fpdf import FPDF
 import tempfile
 import os
+import plotly.express as px
 
 st.set_page_config(page_title="Portfolio Performance", layout="wide")
 st.title("Portfolio Performance Dashboard")
@@ -66,11 +67,6 @@ def fetch_risk_metrics(ticker, benchmark, start_date):
         alpha = (t_aligned.mean() - (beta * b_aligned.mean())) * 252
         sharpe = (t_aligned.mean() * 252) / std_dev if std_dev != 0 else 0
         
-        # Max Drawdown
-        cum_ret = (1 + t_aligned).cumprod()
-        peak = cum_ret.cummax()
-        max_dd = ((cum_ret - peak) / peak).min()
-        
         return {
             't_ret': t_ret_total,
             'b_ret': b_ret_total,
@@ -78,7 +74,6 @@ def fetch_risk_metrics(ticker, benchmark, start_date):
             'beta': beta,
             'sharpe': sharpe,
             'std_dev': std_dev,
-            'max_dd': max_dd,
             'correlation': correlation
         }
     except Exception as e:
@@ -95,19 +90,6 @@ def apply_color_logic(val):
     else:
         return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;' # Translucent Gray
 
-def metric_color(val, metric_type):
-    """Custom heatmap logic without requiring matplotlib."""
-    if pd.isna(val) or type(val) == str: return ''
-    try:
-        v = float(val)
-        if metric_type in ['Alpha', 'Sharpe', 'Correlation']:
-            if v > 0: return 'color: #2ca02c; font-weight: bold;'
-            elif v < 0: return 'color: #d62728; font-weight: bold;'
-        elif metric_type in ['Beta', 'Std Dev', 'Max Drawdown']:
-            if metric_type == 'Max Drawdown' and v < -0.2: return 'color: #d62728; font-weight: bold;'
-            if metric_type == 'Beta' and (v > 1.2 or v < 0.8): return 'color: #d62728; font-weight: bold;'
-    except: pass
-    return ''
 
 # --- SECTION 1: ADD POSITIONS ---
 st.header("1. Add Positions")
@@ -227,11 +209,10 @@ if not st.session_state.portfolio.empty:
                         'Beta': metrics['beta'],
                         'Sharpe': metrics['sharpe'],
                         'Std Dev': metrics['std_dev'],
-                        'Max Drawdown': metrics['max_dd'],
                         'Correlation': metrics['correlation']
                     })
                 else:
-                    metrics_list.append({k: None for k in ['Ticker Return', 'Benchmark Return', 'Difference', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Max Drawdown', 'Correlation']})
+                    metrics_list.append({k: None for k in ['Ticker Return', 'Benchmark Return', 'Difference', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Correlation']})
                     
         # Append metrics to dataframe
         for col in metrics_list[0].keys():
@@ -300,50 +281,58 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         st.bar_chart(chart_df, height=400, color=["#136207", "#77DD77"])
         
         st.write("")
+        st.divider()
         
-        # --- Render Risk Metrics Heatmap ---
-        st.markdown("**Risk & Return Metrics (Since Purchase Date)**")
+        # --- Risk Metrics & Correlation Matrix Layout ---
+        col_metrics, col_matrix = st.columns([1, 2])
         
-        # Create Weighted Average Row for Metrics
-        weighted_row = pd.DataFrame([{
-            'Ticker': 'Weighted Average',
-            'Alpha': (calc_df['Alpha'] * weights).sum(),
-            'Beta': (calc_df['Beta'] * weights).sum(),
-            'Sharpe': (calc_df['Sharpe'] * weights).sum(),
-            'Std Dev': (calc_df['Std Dev'] * weights).sum(),
-            'Max Drawdown': (calc_df['Max Drawdown'] * weights).sum(),
-            'Correlation': (calc_df['Correlation'] * weights).sum()
-        }])
-        
-        # Combine base metrics with weighted row
-        metrics_display_df = calc_df[['Ticker', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Max Drawdown', 'Correlation']].copy()
-        metrics_df = pd.concat([metrics_display_df, weighted_row], ignore_index=True).set_index('Ticker')
-        
-        # Tooltip configurations with 'i' hover capability
-        metrics_config = {
-            "Alpha": st.column_config.NumberColumn("Alpha", format="%.4f", help="Measures the excess return of the asset relative to the benchmark's return. Positive alpha means outperformance."),
-            "Beta": st.column_config.NumberColumn("Beta", format="%.2f", help="Measures the asset's volatility relative to the benchmark. <1 is less volatile, >1 is more volatile."),
-            "Sharpe": st.column_config.NumberColumn("Sharpe Ratio", format="%.2f", help="Measures risk-adjusted return. Indicates how much excess return is received for the extra volatility. Higher is better."),
-            "Std Dev": st.column_config.NumberColumn("Standard Deviation", format="%.2%", help="A measure of the asset's absolute volatility/risk over the period."),
-            "Max Drawdown": st.column_config.NumberColumn("Max Drawdown", format="%.2%", help="The maximum observed loss from a peak to a trough during the period."),
-            "Correlation": st.column_config.NumberColumn("Correlation", format="%.2f", help="How closely the asset's movements track the benchmark. 1.0 means perfect correlation.")
-        }
-        
-        def highlight_weighted(row):
-            if row.name == 'Weighted Average':
-                return ['background-color: rgba(127, 127, 127, 0.2); font-weight: bold;'] * len(row)
-            return [''] * len(row)
+        # 1. Weighted Averages
+        with col_metrics:
+            st.markdown("**Weighted Portfolio Risk Metrics**")
+            w_alpha = (calc_df['Alpha'] * weights).sum()
+            w_beta = (calc_df['Beta'] * weights).sum()
+            w_sharpe = (calc_df['Sharpe'] * weights).sum()
+            w_stddev = (calc_df['Std Dev'] * weights).sum()
+            
+            st.metric("Weighted Alpha", f"{w_alpha:.4f}", 
+                      help="Measures the excess return of the portfolio relative to the benchmark. Positive alpha means outperformance.")
+            st.metric("Weighted Beta", f"{w_beta:.2f}", 
+                      help="Measures the portfolio's volatility relative to the benchmark. < 1.0 is less volatile, > 1.0 is more volatile.")
+            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}", 
+                      help="Measures risk-adjusted return. Indicates how much excess return is received for the extra volatility. Higher is better.")
+            st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}", 
+                      help="A measure of the portfolio's absolute volatility/risk over the period.")
 
-        # Apply crash-proof, logic-based styling instead of matplotlib gradient
-        styled_metrics = metrics_df.style.map(lambda v: metric_color(v, 'Alpha'), subset=['Alpha']) \
-                                         .map(lambda v: metric_color(v, 'Beta'), subset=['Beta']) \
-                                         .map(lambda v: metric_color(v, 'Sharpe'), subset=['Sharpe']) \
-                                         .map(lambda v: metric_color(v, 'Std Dev'), subset=['Std Dev']) \
-                                         .map(lambda v: metric_color(v, 'Max Drawdown'), subset=['Max Drawdown']) \
-                                         .map(lambda v: metric_color(v, 'Correlation'), subset=['Correlation']) \
-                                         .apply(highlight_weighted, axis=1)
-                                         
-        st.dataframe(styled_metrics, use_container_width=True, column_config=metrics_config)
+        # 2. Correlation Matrix Heatmap
+        with col_matrix:
+            st.markdown("**Position Correlation Matrix**")
+            with st.spinner("Calculating correlations..."):
+                unique_tickers = calc_df['Ticker'].unique().tolist()
+                min_date = st.session_state.portfolio['Purchase Date'].min().strftime('%Y-%m-%d')
+                
+                try:
+                    # Fetch all historical data simultaneously for exact overlapping dates
+                    if len(unique_tickers) > 1:
+                        all_data = yf.download(unique_tickers, start=min_date, progress=False)['Close']
+                    else:
+                        all_data = pd.DataFrame(yf.download(unique_tickers[0], start=min_date, progress=False)['Close'])
+                        all_data.columns = unique_tickers
+                        
+                    if not all_data.empty:
+                        returns_df = all_data.pct_change()
+                        corr_matrix = returns_df.corr().round(2)
+                        
+                        # Plotly Heatmap (Red=Positive, Blue=Negative)
+                        fig = px.imshow(corr_matrix, 
+                                        text_auto=".2f", 
+                                        color_continuous_scale="RdBu_r", 
+                                        zmin=-1, zmax=1,
+                                        aspect="auto",
+                                        labels=dict(color="Correlation"))
+                        fig.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+                        st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.warning("Not enough data to build correlation matrix.")
 
         # --- SECTION 5: REPORT GENERATION ---
         st.divider()
@@ -356,7 +345,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         with col_pdf_2:
             st.markdown("**Select Sections to Include:**")
             inc_holdings = st.checkbox("Include Holdings Table", value=True)
-            inc_metrics = st.checkbox("Include Risk Metrics", value=True)
+            inc_metrics = st.checkbox("Include Summary Risk Metrics", value=True)
             
         if st.button("Generate PDF", type="primary"):
             if not client_name:
@@ -367,16 +356,17 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     pdf.add_page()
                     pdf.set_auto_page_break(auto=True, margin=15)
                     
-                    # Header
+                    # Header & Logo Integration Fix
                     if logo_upload is not None:
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
                             tmp_file.write(logo_upload.getvalue())
                             logo_path = tmp_file.name
                         try:
                             pdf.image(logo_path, x=10, y=8, w=30)
-                            os.remove(logo_path)
-                        except:
-                            pass 
+                        except Exception:
+                            pass
+                        finally:
+                            os.remove(logo_path) 
                             
                     pdf.set_font("Arial", "B", 16)
                     pdf.cell(0, 10, f"Portfolio Performance Report", ln=True, align="C")
@@ -398,14 +388,18 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     if inc_holdings:
                         pdf.set_font("Arial", "B", 14)
                         pdf.cell(0, 10, "Current Holdings & Returns", ln=True)
+                        
+                        pdf.set_fill_color(19, 98, 7) # Dark Green Background
+                        pdf.set_text_color(255, 255, 255) # White Text
                         pdf.set_font("Arial", "B", 10)
                         
                         col_widths = [25, 40, 35, 40, 40]
                         headers = ['Ticker', 'Amount', 'P. Date', 'Asset Ret.', 'Bench Ret.']
                         for i in range(len(headers)):
-                            pdf.cell(col_widths[i], 10, headers[i], border=1, align='C')
+                            pdf.cell(col_widths[i], 10, headers[i], border=1, align='C', fill=True)
                         pdf.ln()
                         
+                        pdf.set_text_color(0, 0, 0) # Back to Black text
                         pdf.set_font("Arial", "", 9)
                         for idx, row in calc_df.iterrows():
                             # Format date properly
@@ -418,29 +412,29 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             pdf.ln()
                         pdf.ln(10)
                         
-                    # Risk Metrics Table
+                    # Summary Risk Metrics Table
                     if inc_metrics:
                         pdf.set_font("Arial", "B", 14)
-                        pdf.cell(0, 10, "Risk & Return Metrics", ln=True)
-                        pdf.set_font("Arial", "B", 9)
+                        pdf.cell(0, 10, "Weighted Portfolio Risk Summary", ln=True)
                         
-                        m_widths = [35, 20, 20, 20, 25, 25, 20]
-                        m_headers = ['Ticker', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Max DD', 'Corr']
+                        pdf.set_fill_color(19, 98, 7) # Dark Green Background
+                        pdf.set_text_color(255, 255, 255) # White Text
+                        pdf.set_font("Arial", "B", 10)
+                        
+                        m_widths = [45, 45, 45, 45]
+                        m_headers = ['Alpha', 'Beta', 'Sharpe Ratio', 'Std Dev']
                         for i in range(len(m_headers)):
-                            pdf.cell(m_widths[i], 10, m_headers[i], border=1, align='C')
+                            pdf.cell(m_widths[i], 10, m_headers[i], border=1, align='C', fill=True)
                         pdf.ln()
                         
-                        pdf.set_font("Arial", "", 8)
-                        for idx, row in metrics_df.iterrows():
-                            # idx represents the Ticker or "Weighted Average" string
-                            pdf.cell(m_widths[0], 8, str(idx)[:16], border=1)
-                            pdf.cell(m_widths[1], 8, f"{row['Alpha']:.4f}", border=1, align='R')
-                            pdf.cell(m_widths[2], 8, f"{row['Beta']:.2f}", border=1, align='R')
-                            pdf.cell(m_widths[3], 8, f"{row['Sharpe']:.2f}", border=1, align='R')
-                            pdf.cell(m_widths[4], 8, f"{row['Std Dev']:.2%}", border=1, align='R')
-                            pdf.cell(m_widths[5], 8, f"{row['Max Drawdown']:.2%}", border=1, align='R')
-                            pdf.cell(m_widths[6], 8, f"{row['Correlation']:.2f}", border=1, align='R')
-                            pdf.ln()
+                        pdf.set_text_color(0, 0, 0) # Back to Black text
+                        pdf.set_font("Arial", "", 10)
+                        
+                        pdf.cell(m_widths[0], 10, f"{w_alpha:.4f}", border=1, align='C')
+                        pdf.cell(m_widths[1], 10, f"{w_beta:.2f}", border=1, align='C')
+                        pdf.cell(m_widths[2], 10, f"{w_sharpe:.2f}", border=1, align='C')
+                        pdf.cell(m_widths[3], 10, f"{w_stddev:.2%}", border=1, align='C')
+                        pdf.ln()
 
                     # Output PDF bytes
                     pdf_output = pdf.output(dest='S')
