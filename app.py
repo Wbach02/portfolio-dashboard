@@ -8,6 +8,7 @@ import tempfile
 import os
 import plotly.express as px
 from PIL import Image
+import textwrap
 
 st.set_page_config(page_title="Portfolio Performance", layout="wide")
 st.title("Portfolio Performance Dashboard")
@@ -32,6 +33,14 @@ def get_benchmark(ticker):
     elif ticker_upper in intl_developed: return 'EFA'
     else: return 'SPY' 
 
+def standardize_type(raw_type):
+    """Standardizes verbose asset types into clean, simple categories."""
+    t_upper = str(raw_type).upper()
+    if 'EXCHANGE-TRADED' in t_upper or 'ETF' in t_upper: return 'ETF'
+    if 'MUTUAL' in t_upper: return 'Mutual Fund'
+    if 'STOCK' in t_upper or 'EQUITY' in t_upper: return 'Stock'
+    return str(raw_type)
+
 @st.cache_data
 def fetch_security_details(ticker):
     """Fetches the official company name and asset type from Yahoo Finance."""
@@ -39,7 +48,7 @@ def fetch_security_details(ticker):
         info = yf.Ticker(ticker).info
         name = info.get('shortName', info.get('longName', ticker))
         qtype = info.get('quoteType', 'Unknown')
-        return name, qtype
+        return name, standardize_type(qtype)
     except:
         return ticker, 'Unknown'
 
@@ -113,6 +122,9 @@ with col_upload:
                 # Fallback if the CSV is missing Name or Type
                 if 'Security Name' not in df.columns: df['Security Name'] = df['Ticker']
                 if 'Type' not in df.columns: df['Type'] = "Unknown"
+                
+                # Apply standardization to the Type column
+                df['Type'] = df['Type'].apply(standardize_type)
                 
                 df = df[["Security Name", "Type", "Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
                 
@@ -290,6 +302,12 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         with col_pdf_1:
             client_name = st.text_input("Client Name", placeholder="e.g. Jane Doe")
             logo_upload = st.file_uploader("Upload Company Logo", type=['png', 'jpg', 'jpeg'])
+            
+            st.markdown("**Select Columns for Holdings Table:**")
+            # PDF dynamic columns configuration
+            available_cols = ['Security Name', 'Type', 'Ticker', 'Amount', 'P. Date', 'Asset Ret', 'Bench Ret', 'Difference']
+            selected_pdf_cols = st.multiselect("Columns to include:", available_cols, default=available_cols)
+            
         with col_pdf_2:
             st.markdown("**Select Sections to Include:**")
             inc_summary = st.checkbox("Portfolio Summary & Metrics", value=True)
@@ -338,8 +356,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(0, 8, f"Weighted Benchmark Return: {bench_weighted_return:.2%}", ln=True)
                         pdf.ln(5)
                     
-                    # 2. Holdings Table
-                    if inc_holdings:
+                    # 2. Holdings Table (With Dynamic Columns & Text Wrapping)
+                    if inc_holdings and len(selected_pdf_cols) > 0:
                         pdf.set_font("Arial", "B", 14)
                         pdf.cell(0, 10, "Performance Report", ln=True)
                         
@@ -347,38 +365,69 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.set_text_color(255, 255, 255) # White Text
                         pdf.set_font("Arial", "B", 10)
                         
-                        # Widths adapted for wide landscape page
-                        col_widths = [60, 25, 20, 35, 25, 25, 25, 25]
-                        headers = ['Security Name', 'Type', 'Ticker', 'Amount', 'P. Date', 'Asset Ret', 'Bench Ret', 'Difference']
-                        for i in range(len(headers)):
-                            pdf.cell(col_widths[i], 10, headers[i], border=1, align='C', fill=True)
+                        # Set custom widths for dynamic columns
+                        col_width_map = {
+                            'Security Name': 65, 'Type': 25, 'Ticker': 20, 
+                            'Amount': 30, 'P. Date': 25, 'Asset Ret': 25, 
+                            'Bench Ret': 25, 'Difference': 25
+                        }
+                        
+                        # Print Headers
+                        for col in selected_pdf_cols:
+                            pdf.cell(col_width_map[col], 10, col, border=1, align='C', fill=True)
                         pdf.ln()
                         
                         pdf.set_text_color(0, 0, 0)
                         pdf.set_font("Arial", "", 9)
+                        
                         for idx, row in calc_df.iterrows():
+                            # Format data properly
                             date_str = row['Purchase Date'].strftime('%m/%d/%Y') if hasattr(row['Purchase Date'], 'strftime') else str(row['Purchase Date']).split(' ')[0]
+                            sec_name = str(row.get('Security Name', row['Ticker']))
                             
-                            # Truncate overly long names to fit table bounds
-                            sec_name = str(row.get('Security Name', row['Ticker']))[:30]
+                            # Text Wrapping Logic for Security Name
+                            wrapped_name = textwrap.fill(sec_name, width=35) # Safely wrap at ~35 chars
+                            lines = wrapped_name.count('\n') + 1
+                            row_height = 8 * lines
                             
-                            pdf.cell(col_widths[0], 8, sec_name, border=1)
-                            pdf.cell(col_widths[1], 8, str(row.get('Type', '')), border=1, align='C')
-                            pdf.cell(col_widths[2], 8, str(row['Ticker']), border=1, align='C')
-                            pdf.cell(col_widths[3], 8, f"${row['Amount']:,.2f}", border=1, align='R')
-                            pdf.cell(col_widths[4], 8, date_str, border=1, align='C')
-                            pdf.cell(col_widths[5], 8, f"{row['Ticker Return']:.2%}", border=1, align='R')
-                            pdf.cell(col_widths[6], 8, f"{row['Benchmark Return']:.2%}", border=1, align='R')
+                            # Check for page break safety
+                            if pdf.get_y() + row_height > 180:
+                                pdf.add_page(orientation='L')
                             
-                            # Color-coded difference cell for PDF
-                            diff = row['Difference']
-                            if diff > 0.02: pdf.set_text_color(44, 160, 44)
-                            elif diff < -0.02: pdf.set_text_color(214, 39, 40)
-                            else: pdf.set_text_color(127, 127, 127)
-                            pdf.cell(col_widths[7], 8, f"{diff:.2%}", border=1, align='R')
-                            pdf.set_text_color(0, 0, 0) # Reset to black
+                            x_start = pdf.get_x()
+                            y_start = pdf.get_y()
                             
-                            pdf.ln()
+                            # Print dynamic cells
+                            for col in selected_pdf_cols:
+                                w = col_width_map[col]
+                                x_curr = pdf.get_x()
+                                y_curr = pdf.get_y()
+                                
+                                if col == 'Security Name':
+                                    pdf.multi_cell(w, 8, wrapped_name, border=1, align='L')
+                                    pdf.set_xy(x_curr + w, y_curr)
+                                elif col == 'Type':
+                                    pdf.cell(w, row_height, str(row.get('Type', '')), border=1, align='C')
+                                elif col == 'Ticker':
+                                    pdf.cell(w, row_height, str(row['Ticker']), border=1, align='C')
+                                elif col == 'Amount':
+                                    pdf.cell(w, row_height, f"${row['Amount']:,.2f}", border=1, align='R')
+                                elif col == 'P. Date':
+                                    pdf.cell(w, row_height, date_str, border=1, align='C')
+                                elif col == 'Asset Ret':
+                                    pdf.cell(w, row_height, f"{row['Ticker Return']:.2%}", border=1, align='R')
+                                elif col == 'Bench Ret':
+                                    pdf.cell(w, row_height, f"{row['Benchmark Return']:.2%}", border=1, align='R')
+                                elif col == 'Difference':
+                                    diff = row['Difference']
+                                    if diff > 0.02: pdf.set_text_color(44, 160, 44)
+                                    elif diff < -0.02: pdf.set_text_color(214, 39, 40)
+                                    else: pdf.set_text_color(127, 127, 127)
+                                    pdf.cell(w, row_height, f"{diff:.2%}", border=1, align='R')
+                                    pdf.set_text_color(0, 0, 0)
+                            
+                            # Move to next line
+                            pdf.ln(row_height)
                         pdf.ln(10)
 
                     # 3. Bar Chart Image
@@ -393,7 +442,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             os.remove(f_bar.name)
                         except Exception as e:
                             pdf.set_font("Arial", "", 10)
-                            pdf.cell(0, 10, "Chart could not be generated. Ensure 'kaleido' is in requirements.txt.", ln=True)
+                            pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True)
                         pdf.ln(10)
 
                     # 4. Risk Metrics Summary
@@ -430,7 +479,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             os.remove(f_corr.name)
                         except Exception as e:
                             pdf.set_font("Arial", "", 10)
-                            pdf.cell(0, 10, "Chart could not be generated. Ensure 'kaleido' is in requirements.txt.", ln=True)
+                            pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True)
 
                     # Output PDF
                     pdf_output = pdf.output(dest='S')
