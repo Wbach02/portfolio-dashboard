@@ -7,58 +7,62 @@ from fpdf import FPDF
 import tempfile
 import os
 import plotly.express as px
+from PIL import Image
 
 st.set_page_config(page_title="Portfolio Performance", layout="wide")
 st.title("Portfolio Performance Dashboard")
 
-# Initialize session state with the Benchmark column included
+# Initialize session state (Includes data migration for new Name & Type columns)
 if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = pd.DataFrame(columns=["Ticker", "Amount", "Purchase Date", "Benchmark"])
+    st.session_state.portfolio = pd.DataFrame(columns=["Security Name", "Type", "Ticker", "Amount", "Purchase Date", "Benchmark"])
+else:
+    if "Security Name" not in st.session_state.portfolio.columns:
+        st.session_state.portfolio.insert(0, "Security Name", "")
+    if "Type" not in st.session_state.portfolio.columns:
+        st.session_state.portfolio.insert(1, "Type", "")
 
 def get_benchmark(ticker):
-    """Expanded benchmark mapping based on your critique."""
     commodities = ['GLD', 'SLV', 'PDBC', 'IAU']
     intl_emerging = ['EEM', 'VWO', 'EPI', 'EFEIX']
-    # Added VEU, EFV, BAESY to developed markets
     intl_developed = ['EFA', 'VEA', 'SHLD', 'CGW', 'BAESY', 'VEU', 'EFV']
     
     ticker_upper = str(ticker).upper()
-    if ticker_upper in commodities:
-        return 'AGG'
-    elif ticker_upper in intl_emerging:
-        return 'EEM'
-    elif ticker_upper in intl_developed:
-        return 'EFA'
-    else:
-        return 'SPY' 
+    if ticker_upper in commodities: return 'AGG'
+    elif ticker_upper in intl_emerging: return 'EEM'
+    elif ticker_upper in intl_developed: return 'EFA'
+    else: return 'SPY' 
+
+@st.cache_data
+def fetch_security_details(ticker):
+    """Fetches the official company name and asset type from Yahoo Finance."""
+    try:
+        info = yf.Ticker(ticker).info
+        name = info.get('shortName', info.get('longName', ticker))
+        qtype = info.get('quoteType', 'Unknown')
+        return name, qtype
+    except:
+        return ticker, 'Unknown'
 
 def fetch_risk_metrics(ticker, benchmark, start_date):
     """Fetches historical data to calculate Total Return and Risk Metrics."""
     try:
         data = yf.download([ticker, benchmark], start=start_date, progress=False)['Close']
-        if data.empty or len(data.columns) < 2:
-            return None
+        if data.empty or len(data.columns) < 2: return None
             
         t_data = data[ticker].dropna()
         b_data = data[benchmark].dropna()
         
-        # Total Returns
         t_ret_total = (t_data.iloc[-1] - t_data.iloc[0]) / t_data.iloc[0]
         b_ret_total = (b_data.iloc[-1] - b_data.iloc[0]) / b_data.iloc[0]
         
-        # Daily Returns for Risk Metrics
         t_ret_daily = t_data.pct_change().dropna()
         b_ret_daily = b_data.pct_change().dropna()
         
-        # Align dates
         aligned = pd.concat([t_ret_daily, b_ret_daily], axis=1, join='inner').dropna()
-        if aligned.empty:
-            return None
+        if aligned.empty: return None
             
-        t_aligned = aligned.iloc[:, 0]
-        b_aligned = aligned.iloc[:, 1]
+        t_aligned, b_aligned = aligned.iloc[:, 0], aligned.iloc[:, 1]
         
-        # Metrics Calculations
         std_dev = t_aligned.std() * np.sqrt(252)
         correlation = t_aligned.corr(b_aligned)
         cov = t_aligned.cov(b_aligned)
@@ -68,28 +72,18 @@ def fetch_risk_metrics(ticker, benchmark, start_date):
         sharpe = (t_aligned.mean() * 252) / std_dev if std_dev != 0 else 0
         
         return {
-            't_ret': t_ret_total,
-            'b_ret': b_ret_total,
-            'alpha': alpha,
-            'beta': beta,
-            'sharpe': sharpe,
-            'std_dev': std_dev,
+            't_ret': t_ret_total, 'b_ret': b_ret_total,
+            'alpha': alpha, 'beta': beta,
+            'sharpe': sharpe, 'std_dev': std_dev,
             'correlation': correlation
         }
-    except Exception as e:
-        return None
+    except: return None
 
 def apply_color_logic(val):
-    """Applies your +/- 2% conditional formatting rules with translucent backgrounds."""
-    if pd.isna(val) or val == "":
-        return ''
-    if val > 0.02:
-        return 'background-color: rgba(44, 160, 44, 0.3); font-weight: bold;' # Translucent Green
-    elif val < -0.02:
-        return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;' # Translucent Red
-    else:
-        return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;' # Translucent Gray
-
+    if pd.isna(val) or val == "": return ''
+    if val > 0.02: return 'background-color: rgba(44, 160, 44, 0.3); font-weight: bold;'
+    elif val < -0.02: return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;'
+    else: return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;'
 
 # --- SECTION 1: ADD POSITIONS ---
 st.header("1. Add Positions")
@@ -99,44 +93,38 @@ with col_upload:
     uploaded_file = st.file_uploader("Upload Excel/CSV File", type=['xlsx', 'csv'])
     if uploaded_file is not None and st.button("Process File"):
         try:
-            if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file, low_memory=False)
-            else:
-                df = pd.read_excel(uploaded_file)
+            df = pd.read_csv(uploaded_file, low_memory=False) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
             
-            # Map the specific column names from your export
+            # Map your firm's specific CSV column names
             column_mapping = {
+                'Security Description': 'Security Name',
+                'Security Type': 'Type',
                 'Security Identifier': 'Ticker',
                 'Market Value': 'Amount',
                 'Trade Date': 'Purchase Date'
             }
             
-            # Check if required columns exist before renaming
             existing_cols = [col for col in column_mapping.keys() if col in df.columns]
-            if not existing_cols:
+            if not any(req in df.columns for req in ['Security Identifier', 'Market Value', 'Trade Date']):
                 st.error("Could not find the required columns (Security Identifier, Market Value, Trade Date).")
             else:
                 df = df.rename(columns=column_mapping)
                 
-                # Keep only needed columns and drop rows without a Ticker
-                df = df[["Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
+                # Fallback if the CSV is missing Name or Type
+                if 'Security Name' not in df.columns: df['Security Name'] = df['Ticker']
+                if 'Type' not in df.columns: df['Type'] = "Unknown"
                 
-                # Clean up data types (handles strings with commas or $ in Market Value)
+                df = df[["Security Name", "Type", "Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
+                
                 if df['Amount'].dtype == 'object':
                     df['Amount'] = df['Amount'].astype(str).str.replace(',', '').str.replace('$', '')
                 df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
                 
-                # Clean up dates and drop rows with missing Trade Dates
                 df['Purchase Date'] = pd.to_datetime(df['Purchase Date'], errors='coerce')
                 df = df.dropna(subset=["Purchase Date"]) 
                 
-                # Combine duplicates: Sum the total amount, and take the earliest date
-                df = df.groupby('Ticker', as_index=False).agg({
-                    'Amount': 'sum',
-                    'Purchase Date': 'min'
-                })
-                
-                # Auto-assign the benchmark guess
+                # Consolidate duplicate tickers
+                df = df.groupby(['Security Name', 'Type', 'Ticker'], as_index=False).agg({'Amount': 'sum', 'Purchase Date': 'min'})
                 df['Benchmark'] = df['Ticker'].apply(get_benchmark)
                 
                 st.session_state.portfolio = pd.concat([st.session_state.portfolio, df], ignore_index=True)
@@ -150,37 +138,34 @@ with col_manual:
         new_amount = st.number_input("Amount ($)", min_value=0.0, step=100.0)
         new_date = st.date_input("Date of First Purchase", format="MM/DD/YYYY")
         
-        submitted = st.form_submit_button("Add Single Position")
-        
-        if submitted and new_ticker:
+        if st.form_submit_button("Add Single Position") and new_ticker:
+            name, qtype = fetch_security_details(new_ticker)
             new_row = pd.DataFrame({
-                "Ticker": [new_ticker],
-                "Amount": [new_amount],
-                "Purchase Date": [new_date],
-                "Benchmark": [get_benchmark(new_ticker)]
+                "Security Name": [name], "Type": [qtype],
+                "Ticker": [new_ticker], "Amount": [new_amount],
+                "Purchase Date": [new_date], "Benchmark": [get_benchmark(new_ticker)]
             })
             st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_row], ignore_index=True)
-            st.success(f"Successfully added {new_ticker}!")
+            st.success(f"Successfully added {name}!")
 
 # --- SECTION 2: MANAGE & EDIT PORTFOLIO ---
 st.header("2. Manage Portfolio")
-st.markdown("Check the box on the left of any row and press **Delete** to remove it. You can manually correct benchmarks or dates here before running the report.")
+st.markdown("Check the box on the left of any row and press **Delete** to remove it.")
 
-# Interactive Data Editor
 edited_portfolio = st.data_editor(
     st.session_state.portfolio,
     num_rows="dynamic",
     use_container_width=True,
     column_config={
+        "Type": st.column_config.TextColumn("Type", help="Hover Info: Describes whether the asset is an Equity, ETF, Mutual Fund, etc."),
         "Purchase Date": st.column_config.DateColumn("Purchase Date", format="MM/DD/YYYY"),
         "Amount": st.column_config.NumberColumn("Amount", format="$%.2f")
     }
 )
-# Save edits back to session state immediately
 st.session_state.portfolio = edited_portfolio
 
 if st.button("Clear Entire Portfolio"):
-    st.session_state.portfolio = pd.DataFrame(columns=["Ticker", "Amount", "Purchase Date", "Benchmark"])
+    st.session_state.portfolio = pd.DataFrame(columns=["Security Name", "Type", "Ticker", "Amount", "Purchase Date", "Benchmark"])
     st.rerun()
 
 st.divider()
@@ -191,102 +176,79 @@ st.header("3. Performance Report")
 if not st.session_state.portfolio.empty:
     if st.button("Run Performance Calculation", type="primary"):
         display_df = st.session_state.portfolio.copy()
-        
         metrics_list = []
         
         with st.spinner('Fetching live market data and calculating risk metrics...'):
             for index, row in display_df.iterrows():
                 start_d = row['Purchase Date'].strftime('%Y-%m-%d')
-                
                 metrics = fetch_risk_metrics(row['Ticker'], row['Benchmark'], start_d)
                 
-                if metrics is not None:
+                if metrics:
                     metrics_list.append({
-                        'Ticker Return': metrics['t_ret'],
-                        'Benchmark Return': metrics['b_ret'],
+                        'Ticker Return': metrics['t_ret'], 'Benchmark Return': metrics['b_ret'],
                         'Difference': metrics['t_ret'] - metrics['b_ret'],
-                        'Alpha': metrics['alpha'],
-                        'Beta': metrics['beta'],
-                        'Sharpe': metrics['sharpe'],
-                        'Std Dev': metrics['std_dev'],
-                        'Correlation': metrics['correlation']
+                        'Alpha': metrics['alpha'], 'Beta': metrics['beta'],
+                        'Sharpe': metrics['sharpe'], 'Std Dev': metrics['std_dev'], 'Correlation': metrics['correlation']
                     })
                 else:
                     metrics_list.append({k: None for k in ['Ticker Return', 'Benchmark Return', 'Difference', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Correlation']})
                     
-        # Append metrics to dataframe
         for col in metrics_list[0].keys():
             display_df[col] = [m[col] for m in metrics_list]
         
-        # Save a clean version to session state with all data
         st.session_state.results_df = display_df.copy()
-        
-        # Format the display table without the extra metrics
-        display_cols = ["Ticker", "Amount", "Purchase Date", "Benchmark", "Ticker Return", "Benchmark Return", "Difference"]
-        table_df = display_df[display_cols].copy()
-        
-        # Format the table dates string safely
-        table_df['Purchase Date'] = pd.to_datetime(table_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
-        
-        format_dict = {
-            'Amount': '${:,.2f}',
-            'Ticker Return': '{:.2%}',
-            'Benchmark Return': '{:.2%}',
-            'Difference': '{:.2%}'
-        }
-        
-        styled_df = table_df.style.map(
-            apply_color_logic, subset=['Difference']
-        ).map(
-            lambda _: 'font-weight: bold;', subset=['Ticker']
-        ).set_properties(
-            **{'font-size': '110%'}
-        ).format(format_dict, na_rep="Data Unavailable")
-        
-        st.dataframe(styled_df, use_container_width=True)
 
 if 'results_df' in st.session_state and st.session_state.results_df is not None:
     res = st.session_state.results_df
     calc_df = res.dropna(subset=['Ticker Return', 'Benchmark Return']).copy()
     
     if not calc_df.empty:
+        
+        # Display the formatted holdings table
+        display_cols = ["Security Name", "Type", "Ticker", "Amount", "Purchase Date", "Benchmark", "Ticker Return", "Benchmark Return", "Difference"]
+        table_df = calc_df[display_cols].copy()
+        table_df['Purchase Date'] = pd.to_datetime(table_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
+        
+        format_dict = {'Amount': '${:,.2f}', 'Ticker Return': '{:.2%}', 'Benchmark Return': '{:.2%}', 'Difference': '{:.2%}'}
+        
+        styled_df = table_df.style.map(apply_color_logic, subset=['Difference']) \
+            .map(lambda _: 'font-weight: bold;', subset=['Ticker']) \
+            .set_properties(**{'font-size': '110%'}).format(format_dict, na_rep="Data Unavailable")
+            
+        st.dataframe(styled_df, use_container_width=True, column_config={
+            "Type": st.column_config.TextColumn("Type", help="Describes whether the asset is an Equity, ETF, Mutual Fund, etc.")
+        })
+
         # --- SECTION 4: VISUAL SUMMARY & METRICS ---
         st.divider()
         st.subheader("📊 Portfolio Summary & Risk Metrics")
         
         total_value = calc_df['Amount'].sum()
-        
-        # Calculate KPIs
         weights = calc_df['Amount'] / total_value
         port_weighted_return = (calc_df['Ticker Return'] * weights).sum()
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
-        # --- KPI Cards ---
+        # 1. KPI Cards
         m1, m2, m3 = st.columns(3)
-        with m1:
-            st.metric("Total Portfolio Value", f"${total_value:,.2f}")
-        with m2:
-            st.metric("Weighted Portfolio Return", f"{port_weighted_return:.2%}", delta=f"{weighted_diff:.2%} vs Benchmark")
-        with m3:
-            st.metric("Weighted Benchmark Return", f"{bench_weighted_return:.2%}")
-            
-        st.write("") 
+        m1.metric("Total Portfolio Value", f"${total_value:,.2f}")
+        m2.metric("Weighted Portfolio Return", f"{port_weighted_return:.2%}", delta=f"{weighted_diff:.2%} vs Benchmark")
+        m3.metric("Weighted Benchmark Return", f"{bench_weighted_return:.2%}")
 
-        # --- Render Performance Bar Chart ---
+        # 2. Plotly Grouped Bar Chart
         st.markdown("**Asset vs Benchmark Performance**")
-        chart_df = calc_df[['Ticker', 'Ticker Return', 'Benchmark Return']].set_index('Ticker')
+        chart_df = calc_df[['Ticker', 'Ticker Return', 'Benchmark Return']].copy()
+        chart_melt = chart_df.melt(id_vars='Ticker', var_name='Metric', value_name='Return')
+        fig_bar = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
+                         color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
+        fig_bar.update_layout(yaxis_tickformat='.2%', margin=dict(l=0, r=0, t=30, b=0), legend_title_text='')
+        st.plotly_chart(fig_bar, use_container_width=True)
         
-        # Plot Bar Chart with Dark Green (Assets) vs Light Green (Benchmark)
-        st.bar_chart(chart_df, height=400, color=["#136207", "#77DD77"])
-        
-        st.write("")
         st.divider()
         
-        # --- Risk Metrics & Correlation Matrix Layout ---
+        # 3. Risk Metrics & Correlation Matrix
         col_metrics, col_matrix = st.columns([1, 2])
         
-        # 1. Weighted Averages
         with col_metrics:
             st.markdown("**Weighted Portfolio Risk Metrics**")
             w_alpha = (calc_df['Alpha'] * weights).sum()
@@ -294,80 +256,71 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             w_sharpe = (calc_df['Sharpe'] * weights).sum()
             w_stddev = (calc_df['Std Dev'] * weights).sum()
             
-            st.metric("Weighted Alpha", f"{w_alpha:.4f}", 
-                      help="Measures the excess return of the portfolio relative to the benchmark. Positive alpha means outperformance.")
-            st.metric("Weighted Beta", f"{w_beta:.2f}", 
-                      help="Measures the portfolio's volatility relative to the benchmark. < 1.0 is less volatile, > 1.0 is more volatile.")
-            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}", 
-                      help="Measures risk-adjusted return. Indicates how much excess return is received for the extra volatility. Higher is better.")
-            st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}", 
-                      help="A measure of the portfolio's absolute volatility/risk over the period.")
+            st.metric("Weighted Alpha", f"{w_alpha:.4f}", help="Excess return of the portfolio relative to the benchmark. Positive alpha means outperformance.")
+            st.metric("Weighted Beta", f"{w_beta:.2f}", help="Volatility relative to the benchmark. < 1.0 is less volatile, > 1.0 is more volatile.")
+            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}", help="Risk-adjusted return. How much excess return is received for the extra volatility. Higher is better.")
+            st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}", help="Absolute volatility/risk over the period.")
 
-        # 2. Correlation Matrix Heatmap
         with col_matrix:
             st.markdown("**Position Correlation Matrix**")
+            fig_corr = None
             with st.spinner("Calculating correlations..."):
                 unique_tickers = calc_df['Ticker'].unique().tolist()
                 min_date = st.session_state.portfolio['Purchase Date'].min().strftime('%Y-%m-%d')
-                
                 try:
-                    # Fetch all historical data simultaneously for exact overlapping dates
                     if len(unique_tickers) > 1:
                         all_data = yf.download(unique_tickers, start=min_date, progress=False)['Close']
-                    else:
-                        all_data = pd.DataFrame(yf.download(unique_tickers[0], start=min_date, progress=False)['Close'])
-                        all_data.columns = unique_tickers
-                        
-                    if not all_data.empty:
                         returns_df = all_data.pct_change()
                         corr_matrix = returns_df.corr().round(2)
                         
-                        # Plotly Heatmap (Red=Positive, Blue=Negative)
-                        fig = px.imshow(corr_matrix, 
-                                        text_auto=".2f", 
-                                        color_continuous_scale="RdBu_r", 
-                                        zmin=-1, zmax=1,
-                                        aspect="auto",
-                                        labels=dict(color="Correlation"))
-                        fig.update_layout(margin=dict(l=0, r=0, t=10, b=0))
-                        st.plotly_chart(fig, use_container_width=True)
-                except Exception as e:
+                        fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
+                                             zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
+                        fig_corr.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+                        st.plotly_chart(fig_corr, use_container_width=True)
+                    else:
+                        st.info("Add more than one position to generate a correlation matrix.")
+                except:
                     st.warning("Not enough data to build correlation matrix.")
 
         # --- SECTION 5: REPORT GENERATION ---
         st.divider()
-        st.subheader("📄 Generate Client PDF Report")
+        st.subheader("📄 Generate Landscape Client PDF Report")
         
         col_pdf_1, col_pdf_2 = st.columns(2)
         with col_pdf_1:
             client_name = st.text_input("Client Name", placeholder="e.g. Jane Doe")
-            logo_upload = st.file_uploader("Upload Company Logo (PNG/JPG)", type=['png', 'jpg', 'jpeg'])
+            logo_upload = st.file_uploader("Upload Company Logo", type=['png', 'jpg', 'jpeg'])
         with col_pdf_2:
             st.markdown("**Select Sections to Include:**")
-            inc_holdings = st.checkbox("Include Holdings Table", value=True)
-            inc_metrics = st.checkbox("Include Summary Risk Metrics", value=True)
+            inc_summary = st.checkbox("Portfolio Summary & Metrics", value=True)
+            inc_holdings = st.checkbox("Performance Report Table", value=True)
+            inc_bar = st.checkbox("Asset vs Benchmark Bar Chart", value=True)
+            inc_risk = st.checkbox("Weighted Portfolio Risk Metrics", value=True)
+            inc_corr = st.checkbox("Position Correlation Matrix", value=True)
             
         if st.button("Generate PDF", type="primary"):
             if not client_name:
                 st.warning("Please enter a Client Name.")
             else:
-                with st.spinner("Building PDF..."):
-                    pdf = FPDF()
+                with st.spinner("Building Landscape PDF..."):
+                    # Initialize Landscape PDF
+                    pdf = FPDF(orientation='L', unit='mm', format='A4')
                     pdf.add_page()
                     pdf.set_auto_page_break(auto=True, margin=15)
                     
-                    # Header & Logo Integration Fix
+                    # Robust Logo Processing (Converts to RGB JPEG to avoid PNG Alpha crashes)
                     if logo_upload is not None:
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
-                            tmp_file.write(logo_upload.getvalue())
-                            logo_path = tmp_file.name
                         try:
-                            pdf.image(logo_path, x=10, y=8, w=30)
-                        except Exception:
-                            pass
-                        finally:
-                            os.remove(logo_path) 
+                            img = Image.open(logo_upload).convert("RGB")
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+                                img.save(tmp_file.name, format="JPEG")
+                                logo_path = tmp_file.name
+                            pdf.image(logo_path, x=10, y=8, h=15)
+                            os.remove(logo_path)
+                        except Exception as e:
+                            st.warning(f"Could not print logo: {e}")
                             
+                    # Header
                     pdf.set_font("Arial", "B", 16)
                     pdf.cell(0, 10, f"Portfolio Performance Report", ln=True, align="C")
                     pdf.set_font("Arial", "", 12)
@@ -375,74 +328,117 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     pdf.cell(0, 10, f"Date: {datetime.datetime.now().strftime('%B %d, %Y')}", ln=True, align="C")
                     pdf.ln(10)
                     
-                    # KPI Summary
-                    pdf.set_font("Arial", "B", 14)
-                    pdf.cell(0, 10, "Portfolio Summary", ln=True)
-                    pdf.set_font("Arial", "", 11)
-                    pdf.cell(0, 8, f"Total Portfolio Value: ${total_value:,.2f}", ln=True)
-                    pdf.cell(0, 8, f"Weighted Portfolio Return: {port_weighted_return:.2%}", ln=True)
-                    pdf.cell(0, 8, f"Weighted Benchmark Return: {bench_weighted_return:.2%}", ln=True)
-                    pdf.ln(10)
+                    # 1. Summary
+                    if inc_summary:
+                        pdf.set_font("Arial", "B", 14)
+                        pdf.cell(0, 10, "Portfolio Summary", ln=True)
+                        pdf.set_font("Arial", "", 11)
+                        pdf.cell(0, 8, f"Total Portfolio Value: ${total_value:,.2f}", ln=True)
+                        pdf.cell(0, 8, f"Weighted Portfolio Return: {port_weighted_return:.2%}", ln=True)
+                        pdf.cell(0, 8, f"Weighted Benchmark Return: {bench_weighted_return:.2%}", ln=True)
+                        pdf.ln(5)
                     
-                    # Holdings Table
+                    # 2. Holdings Table
                     if inc_holdings:
                         pdf.set_font("Arial", "B", 14)
-                        pdf.cell(0, 10, "Current Holdings & Returns", ln=True)
+                        pdf.cell(0, 10, "Performance Report", ln=True)
                         
                         pdf.set_fill_color(19, 98, 7) # Dark Green Background
                         pdf.set_text_color(255, 255, 255) # White Text
                         pdf.set_font("Arial", "B", 10)
                         
-                        col_widths = [25, 40, 35, 40, 40]
-                        headers = ['Ticker', 'Amount', 'P. Date', 'Asset Ret.', 'Bench Ret.']
+                        # Widths adapted for wide landscape page
+                        col_widths = [60, 25, 20, 35, 25, 25, 25, 25]
+                        headers = ['Security Name', 'Type', 'Ticker', 'Amount', 'P. Date', 'Asset Ret', 'Bench Ret', 'Difference']
                         for i in range(len(headers)):
                             pdf.cell(col_widths[i], 10, headers[i], border=1, align='C', fill=True)
                         pdf.ln()
                         
-                        pdf.set_text_color(0, 0, 0) # Back to Black text
+                        pdf.set_text_color(0, 0, 0)
                         pdf.set_font("Arial", "", 9)
                         for idx, row in calc_df.iterrows():
-                            # Format date properly
                             date_str = row['Purchase Date'].strftime('%m/%d/%Y') if hasattr(row['Purchase Date'], 'strftime') else str(row['Purchase Date']).split(' ')[0]
-                            pdf.cell(col_widths[0], 8, str(row['Ticker']), border=1)
-                            pdf.cell(col_widths[1], 8, f"${row['Amount']:,.2f}", border=1, align='R')
-                            pdf.cell(col_widths[2], 8, date_str, border=1, align='C')
-                            pdf.cell(col_widths[3], 8, f"{row['Ticker Return']:.2%}", border=1, align='R')
-                            pdf.cell(col_widths[4], 8, f"{row['Benchmark Return']:.2%}", border=1, align='R')
+                            
+                            # Truncate overly long names to fit table bounds
+                            sec_name = str(row.get('Security Name', row['Ticker']))[:30]
+                            
+                            pdf.cell(col_widths[0], 8, sec_name, border=1)
+                            pdf.cell(col_widths[1], 8, str(row.get('Type', '')), border=1, align='C')
+                            pdf.cell(col_widths[2], 8, str(row['Ticker']), border=1, align='C')
+                            pdf.cell(col_widths[3], 8, f"${row['Amount']:,.2f}", border=1, align='R')
+                            pdf.cell(col_widths[4], 8, date_str, border=1, align='C')
+                            pdf.cell(col_widths[5], 8, f"{row['Ticker Return']:.2%}", border=1, align='R')
+                            pdf.cell(col_widths[6], 8, f"{row['Benchmark Return']:.2%}", border=1, align='R')
+                            
+                            # Color-coded difference cell for PDF
+                            diff = row['Difference']
+                            if diff > 0.02: pdf.set_text_color(44, 160, 44)
+                            elif diff < -0.02: pdf.set_text_color(214, 39, 40)
+                            else: pdf.set_text_color(127, 127, 127)
+                            pdf.cell(col_widths[7], 8, f"{diff:.2%}", border=1, align='R')
+                            pdf.set_text_color(0, 0, 0) # Reset to black
+                            
                             pdf.ln()
                         pdf.ln(10)
-                        
-                    # Summary Risk Metrics Table
-                    if inc_metrics:
+
+                    # 3. Bar Chart Image
+                    if inc_bar:
+                        pdf.add_page(orientation='L')
+                        pdf.set_font("Arial", "B", 14)
+                        pdf.cell(0, 10, "Asset vs Benchmark Performance", ln=True)
+                        try:
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_bar:
+                                fig_bar.write_image(f_bar.name, format="png", engine="kaleido")
+                                pdf.image(f_bar.name, w=250)
+                            os.remove(f_bar.name)
+                        except Exception as e:
+                            pdf.set_font("Arial", "", 10)
+                            pdf.cell(0, 10, "Chart could not be generated. Ensure 'kaleido' is in requirements.txt.", ln=True)
+                        pdf.ln(10)
+
+                    # 4. Risk Metrics Summary
+                    if inc_risk:
                         pdf.set_font("Arial", "B", 14)
                         pdf.cell(0, 10, "Weighted Portfolio Risk Summary", ln=True)
-                        
-                        pdf.set_fill_color(19, 98, 7) # Dark Green Background
-                        pdf.set_text_color(255, 255, 255) # White Text
+                        pdf.set_fill_color(19, 98, 7)
+                        pdf.set_text_color(255, 255, 255)
                         pdf.set_font("Arial", "B", 10)
                         
                         m_widths = [45, 45, 45, 45]
-                        m_headers = ['Alpha', 'Beta', 'Sharpe Ratio', 'Std Dev']
+                        m_headers = ['Weighted Alpha', 'Weighted Beta', 'Weighted Sharpe', 'Weighted Std Dev']
                         for i in range(len(m_headers)):
                             pdf.cell(m_widths[i], 10, m_headers[i], border=1, align='C', fill=True)
                         pdf.ln()
                         
-                        pdf.set_text_color(0, 0, 0) # Back to Black text
+                        pdf.set_text_color(0, 0, 0)
                         pdf.set_font("Arial", "", 10)
-                        
                         pdf.cell(m_widths[0], 10, f"{w_alpha:.4f}", border=1, align='C')
                         pdf.cell(m_widths[1], 10, f"{w_beta:.2f}", border=1, align='C')
                         pdf.cell(m_widths[2], 10, f"{w_sharpe:.2f}", border=1, align='C')
                         pdf.cell(m_widths[3], 10, f"{w_stddev:.2%}", border=1, align='C')
-                        pdf.ln()
+                        pdf.ln(15)
 
-                    # Output PDF bytes
+                    # 5. Correlation Matrix Image
+                    if inc_corr and fig_corr is not None:
+                        pdf.add_page(orientation='L')
+                        pdf.set_font("Arial", "B", 14)
+                        pdf.cell(0, 10, "Position Correlation Matrix", ln=True)
+                        try:
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr:
+                                fig_corr.write_image(f_corr.name, format="png", engine="kaleido")
+                                pdf.image(f_corr.name, w=220)
+                            os.remove(f_corr.name)
+                        except Exception as e:
+                            pdf.set_font("Arial", "", 10)
+                            pdf.cell(0, 10, "Chart could not be generated. Ensure 'kaleido' is in requirements.txt.", ln=True)
+
+                    # Output PDF
                     pdf_output = pdf.output(dest='S')
                     pdf_bytes = pdf_output.encode('latin-1') if isinstance(pdf_output, str) else bytes(pdf_output)
                     
                     st.success("PDF generated successfully!")
                     st.download_button(
-                        label="⬇️ Download PDF Report",
+                        label="⬇️ Download Landscape PDF Report",
                         data=pdf_bytes,
                         file_name=f"{client_name.replace(' ', '_')}_Portfolio_Report.pdf",
                         mime="application/pdf"
