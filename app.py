@@ -53,9 +53,10 @@ def fetch_security_details(ticker):
         return ticker, 'Unknown'
 
 def fetch_risk_metrics(ticker, benchmark, start_date):
-    """Fetches historical data to calculate Total Return and Risk Metrics."""
+    """Fetches historical data to calculate Total Return and Risk Metrics using Adjusted Close."""
     try:
-        data = yf.download([ticker, benchmark], start=start_date, progress=False)['Close']
+        # Crucial Fix: auto_adjust=True guarantees we account for splits and dividends
+        data = yf.download([ticker, benchmark], start=start_date, progress=False, auto_adjust=True)['Close']
         if data.empty or len(data.columns) < 2: return None
             
         t_data = data[ticker].dropna()
@@ -104,7 +105,6 @@ with col_upload:
         try:
             df = pd.read_csv(uploaded_file, low_memory=False) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
             
-            # Map your firm's specific CSV column names
             column_mapping = {
                 'Security Description': 'Security Name',
                 'Security Type': 'Type',
@@ -119,13 +119,10 @@ with col_upload:
             else:
                 df = df.rename(columns=column_mapping)
                 
-                # Fallback if the CSV is missing Name or Type
                 if 'Security Name' not in df.columns: df['Security Name'] = df['Ticker']
                 if 'Type' not in df.columns: df['Type'] = "Unknown"
                 
-                # Apply standardization to the Type column
                 df['Type'] = df['Type'].apply(standardize_type)
-                
                 df = df[["Security Name", "Type", "Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
                 
                 if df['Amount'].dtype == 'object':
@@ -135,7 +132,6 @@ with col_upload:
                 df['Purchase Date'] = pd.to_datetime(df['Purchase Date'], errors='coerce')
                 df = df.dropna(subset=["Purchase Date"]) 
                 
-                # Consolidate duplicate tickers
                 df = df.groupby(['Security Name', 'Type', 'Ticker'], as_index=False).agg({'Amount': 'sum', 'Purchase Date': 'min'})
                 df['Benchmark'] = df['Ticker'].apply(get_benchmark)
                 
@@ -190,7 +186,7 @@ if not st.session_state.portfolio.empty:
         display_df = st.session_state.portfolio.copy()
         metrics_list = []
         
-        with st.spinner('Fetching live market data and calculating risk metrics...'):
+        with st.spinner('Fetching live market data (Adjusted for Dividends & Splits)...'):
             for index, row in display_df.iterrows():
                 start_d = row['Purchase Date'].strftime('%Y-%m-%d')
                 metrics = fetch_risk_metrics(row['Ticker'], row['Benchmark'], start_d)
@@ -216,14 +212,12 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
     
     if not calc_df.empty:
         
-        # Display the formatted holdings table
         display_cols = ["Security Name", "Type", "Ticker", "Amount", "Purchase Date", "Benchmark", "Ticker Return", "Benchmark Return", "Difference"]
         table_df = calc_df[display_cols].copy()
         table_df['Purchase Date'] = pd.to_datetime(table_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
         
         format_dict = {'Amount': '${:,.2f}', 'Ticker Return': '{:.2%}', 'Benchmark Return': '{:.2%}', 'Difference': '{:.2%}'}
         
-        # We add 'white-space: normal' to force the Streamlit UI to wrap long security names!
         styled_df = table_df.style.map(apply_color_logic, subset=['Difference']) \
             .map(lambda _: 'font-weight: bold;', subset=['Ticker']) \
             .set_properties(**{'font-size': '110%', 'white-space': 'normal'}).format(format_dict, na_rep="Data Unavailable")
@@ -243,24 +237,22 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
-        # 1. KPI Cards
         m1, m2, m3 = st.columns(3)
         m1.metric("Total Portfolio Value", f"${total_value:,.2f}")
         m2.metric("Weighted Portfolio Return", f"{port_weighted_return:.2%}", delta=f"{weighted_diff:.2%} vs Benchmark")
         m3.metric("Weighted Benchmark Return", f"{bench_weighted_return:.2%}")
 
-        # 2. Plotly Grouped Bar Chart
         st.markdown("**Asset vs Benchmark Performance**")
         chart_df = calc_df[['Ticker', 'Ticker Return', 'Benchmark Return']].copy()
         chart_melt = chart_df.melt(id_vars='Ticker', var_name='Metric', value_name='Return')
         fig_bar = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
                          color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
-        fig_bar.update_layout(yaxis_tickformat='.2%', margin=dict(l=0, r=0, t=30, b=0), legend_title_text='')
+        # Explicit margins added to ensure labels don't get cut off in export
+        fig_bar.update_layout(yaxis_tickformat='.2%', margin=dict(l=60, r=20, t=40, b=80), legend_title_text='')
         st.plotly_chart(fig_bar, use_container_width=True)
         
         st.divider()
         
-        # 3. Risk Metrics & Correlation Matrix
         col_metrics, col_matrix = st.columns([1, 2])
         
         with col_metrics:
@@ -283,13 +275,14 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                 min_date = st.session_state.portfolio['Purchase Date'].min().strftime('%Y-%m-%d')
                 try:
                     if len(unique_tickers) > 1:
-                        all_data = yf.download(unique_tickers, start=min_date, progress=False)['Close']
+                        all_data = yf.download(unique_tickers, start=min_date, progress=False, auto_adjust=True)['Close']
                         returns_df = all_data.pct_change()
                         corr_matrix = returns_df.corr().round(2)
                         
                         fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
                                              zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                        fig_corr.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+                        # Explicit margins added to ensure labels don't get cut off in export
+                        fig_corr.update_layout(margin=dict(l=60, r=20, t=40, b=80))
                         st.plotly_chart(fig_corr, use_container_width=True)
                     else:
                         st.info("Add more than one position to generate a correlation matrix.")
@@ -306,7 +299,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             logo_upload = st.file_uploader("Upload Company Logo", type=['png', 'jpg', 'jpeg'])
             
             st.markdown("**Select Columns for Holdings Table:**")
-            # PDF dynamic columns configuration
             available_cols = ['Security Name', 'Type', 'Ticker', 'Amount', 'P. Date', 'Asset Ret', 'Bench Ret', 'Difference']
             selected_pdf_cols = st.multiselect("Columns to include:", available_cols, default=available_cols)
             
@@ -323,12 +315,10 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                 st.warning("Please enter a Client Name.")
             else:
                 with st.spinner("Building Landscape PDF..."):
-                    # Initialize Landscape PDF
                     pdf = FPDF(orientation='L', unit='mm', format='A4')
                     pdf.add_page()
                     pdf.set_auto_page_break(auto=True, margin=15)
                     
-                    # Robust Logo Processing
                     if logo_upload is not None:
                         try:
                             img = Image.open(logo_upload).convert("RGB")
@@ -341,7 +331,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             st.warning(f"Could not print logo: {e}")
                             
                     # Header
-                    pdf.set_font("Arial", "B", 16)
+                    pdf.set_font("Arial", "B", 18)
                     pdf.cell(0, 10, f"Portfolio Performance Report", ln=True, align="C")
                     pdf.set_font("Arial", "", 12)
                     pdf.cell(0, 10, f"Prepared for: {client_name}", ln=True, align="C")
@@ -352,66 +342,65 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     if inc_summary:
                         pdf.set_font("Arial", "B", 14)
                         pdf.cell(0, 10, "Portfolio Summary", ln=True)
-                        pdf.set_font("Arial", "", 11)
+                        pdf.set_font("Arial", "", 12)
                         pdf.cell(0, 8, f"Total Portfolio Value: ${total_value:,.2f}", ln=True)
                         pdf.cell(0, 8, f"Weighted Portfolio Return: {port_weighted_return:.2%}", ln=True)
                         pdf.cell(0, 8, f"Weighted Benchmark Return: {bench_weighted_return:.2%}", ln=True)
                         pdf.ln(5)
                     
-                    # 2. Holdings Table (With Dynamic Columns & Improved Text Wrapping)
+                    # 2. Holdings Table (Wider Columns & 25% Larger Font)
                     if inc_holdings and len(selected_pdf_cols) > 0:
                         pdf.set_font("Arial", "B", 14)
                         pdf.cell(0, 10, "Performance Report", ln=True)
                         
                         pdf.set_fill_color(19, 98, 7) # Dark Green Background
                         pdf.set_text_color(255, 255, 255) # White Text
-                        pdf.set_font("Arial", "B", 10)
+                        pdf.set_font("Arial", "B", 12) # Larger Header Font
                         
-                        # Set custom widths for dynamic columns
+                        # Expanded widths to maximize Landscape spacing (Total = ~267mm)
                         col_width_map = {
-                            'Security Name': 65, 'Type': 25, 'Ticker': 20, 
-                            'Amount': 30, 'P. Date': 25, 'Asset Ret': 25, 
-                            'Bench Ret': 25, 'Difference': 25
+                            'Security Name': 75, 'Type': 25, 'Ticker': 22, 
+                            'Amount': 33, 'P. Date': 27, 'Asset Ret': 28, 
+                            'Bench Ret': 28, 'Difference': 29
                         }
                         
-                        # Print Headers
                         for col in selected_pdf_cols:
                             pdf.cell(col_width_map[col], 10, col, border=1, align='C', fill=True)
                         pdf.ln()
                         
                         pdf.set_text_color(0, 0, 0)
-                        pdf.set_font("Arial", "", 9)
+                        pdf.set_font("Arial", "", 11) # 25% Larger Data Font
                         
                         for idx, row in calc_df.iterrows():
-                            # Format data properly
                             date_str = row['Purchase Date'].strftime('%m/%d/%Y') if hasattr(row['Purchase Date'], 'strftime') else str(row['Purchase Date']).split(' ')[0]
                             sec_name = str(row.get('Security Name', row['Ticker']))
                             
-                            # Improved Text Wrapping: Forces breaks on long unspaced words
-                            wrapped_name = textwrap.fill(sec_name, width=30, break_long_words=True)
+                            wrapped_name = textwrap.fill(sec_name, width=38, break_long_words=True)
                             lines = wrapped_name.count('\n') + 1
-                            row_height = 8 * lines
                             
-                            # Check for page break safety
+                            line_height = 7
+                            row_height = line_height * lines
+                            
                             if pdf.get_y() + row_height > 180:
                                 pdf.add_page(orientation='L')
                             
                             x_start = pdf.get_x()
                             y_start = pdf.get_y()
                             
-                            # Print dynamic cells
                             for col in selected_pdf_cols:
                                 w = col_width_map[col]
                                 x_curr = pdf.get_x()
                                 y_curr = pdf.get_y()
                                 
                                 if col == 'Security Name':
-                                    pdf.multi_cell(w, 8, wrapped_name, border=1, align='L')
+                                    pdf.multi_cell(w, line_height, wrapped_name, border=1, align='L')
                                     pdf.set_xy(x_curr + w, y_curr)
                                 elif col == 'Type':
                                     pdf.cell(w, row_height, str(row.get('Type', '')), border=1, align='C')
                                 elif col == 'Ticker':
+                                    pdf.set_font("Arial", "B", 11) # BOLD the Ticker like the dashboard
                                     pdf.cell(w, row_height, str(row['Ticker']), border=1, align='C')
+                                    pdf.set_font("Arial", "", 11)
                                 elif col == 'Amount':
                                     pdf.cell(w, row_height, f"${row['Amount']:,.2f}", border=1, align='R')
                                 elif col == 'P. Date':
@@ -422,13 +411,14 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                     pdf.cell(w, row_height, f"{row['Benchmark Return']:.2%}", border=1, align='R')
                                 elif col == 'Difference':
                                     diff = row['Difference']
-                                    if diff > 0.02: pdf.set_text_color(44, 160, 44)
-                                    elif diff < -0.02: pdf.set_text_color(214, 39, 40)
-                                    else: pdf.set_text_color(127, 127, 127)
+                                    pdf.set_font("Arial", "B", 11) # BOLD the Difference
+                                    if diff > 0.02: pdf.set_text_color(44, 160, 44) # Green
+                                    elif diff < -0.02: pdf.set_text_color(214, 39, 40) # Red
+                                    else: pdf.set_text_color(127, 127, 127) # Gray
                                     pdf.cell(w, row_height, f"{diff:.2%}", border=1, align='R')
                                     pdf.set_text_color(0, 0, 0)
+                                    pdf.set_font("Arial", "", 11)
                             
-                            # Move to next line
                             pdf.ln(row_height)
                         pdf.ln(10)
 
@@ -439,49 +429,63 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(0, 10, "Asset vs Benchmark Performance", ln=True)
                         try:
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_bar:
-                                fig_bar.write_image(f_bar.name, format="png", engine="kaleido")
-                                pdf.image(f_bar.name, w=250)
+                                # Render with explicit width/height to protect labels
+                                fig_bar.write_image(f_bar.name, format="png", engine="kaleido", width=1100, height=500, scale=2)
+                                
+                                # Center Image Mathematically: (Landscape width 297 - img width) / 2
+                                img_w = 240
+                                x_pos = (297 - img_w) / 2
+                                pdf.image(f_bar.name, x=x_pos, w=img_w)
                             os.remove(f_bar.name)
                         except Exception as e:
                             pdf.set_font("Arial", "", 10)
-                            pdf.cell(0, 10, f"Chart could not be generated. Please ensure you are running Python 3.9 in the Streamlit Settings or have 'chromium' installed via packages.txt.", ln=True)
-                        pdf.ln(10)
+                            pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True)
 
-                    # 4. Risk Metrics Summary
-                    if inc_risk:
-                        pdf.set_font("Arial", "B", 14)
-                        pdf.cell(0, 10, "Weighted Portfolio Risk Summary", ln=True)
-                        pdf.set_fill_color(19, 98, 7)
-                        pdf.set_text_color(255, 255, 255)
-                        pdf.set_font("Arial", "B", 10)
-                        
-                        m_widths = [45, 45, 45, 45]
-                        m_headers = ['Weighted Alpha', 'Weighted Beta', 'Weighted Sharpe', 'Weighted Std Dev']
-                        for i in range(len(m_headers)):
-                            pdf.cell(m_widths[i], 10, m_headers[i], border=1, align='C', fill=True)
-                        pdf.ln()
-                        
-                        pdf.set_text_color(0, 0, 0)
-                        pdf.set_font("Arial", "", 10)
-                        pdf.cell(m_widths[0], 10, f"{w_alpha:.4f}", border=1, align='C')
-                        pdf.cell(m_widths[1], 10, f"{w_beta:.2f}", border=1, align='C')
-                        pdf.cell(m_widths[2], 10, f"{w_sharpe:.2f}", border=1, align='C')
-                        pdf.cell(m_widths[3], 10, f"{w_stddev:.2%}", border=1, align='C')
-                        pdf.ln(15)
-
-                    # 5. Correlation Matrix Image
-                    if inc_corr and fig_corr is not None:
+                    # 4 & 5. Risk Metrics and Correlation Matrix (COMBINED ON SAME PAGE)
+                    if inc_risk or inc_corr:
                         pdf.add_page(orientation='L')
-                        pdf.set_font("Arial", "B", 14)
-                        pdf.cell(0, 10, "Position Correlation Matrix", ln=True)
-                        try:
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr:
-                                fig_corr.write_image(f_corr.name, format="png", engine="kaleido")
-                                pdf.image(f_corr.name, w=220)
-                            os.remove(f_corr.name)
-                        except Exception as e:
-                            pdf.set_font("Arial", "", 10)
-                            pdf.cell(0, 10, f"Chart could not be generated. Please ensure you are running Python 3.9 in the Streamlit Settings or have 'chromium' installed via packages.txt.", ln=True)
+                        
+                        if inc_risk:
+                            pdf.set_font("Arial", "B", 14)
+                            pdf.cell(0, 10, "Weighted Portfolio Risk Summary", ln=True)
+                            pdf.set_fill_color(19, 98, 7)
+                            pdf.set_text_color(255, 255, 255)
+                            pdf.set_font("Arial", "B", 12)
+                            
+                            m_widths = [50, 50, 50, 50]
+                            m_headers = ['Weighted Alpha', 'Weighted Beta', 'Weighted Sharpe', 'Weighted Std Dev']
+                            
+                            # Center the Risk Table
+                            pdf.set_x(48.5)
+                            for i in range(len(m_headers)):
+                                pdf.cell(m_widths[i], 10, m_headers[i], border=1, align='C', fill=True)
+                            pdf.ln()
+                            
+                            pdf.set_x(48.5)
+                            pdf.set_text_color(0, 0, 0)
+                            pdf.set_font("Arial", "", 11)
+                            pdf.cell(m_widths[0], 10, f"{w_alpha:.4f}", border=1, align='C')
+                            pdf.cell(m_widths[1], 10, f"{w_beta:.2f}", border=1, align='C')
+                            pdf.cell(m_widths[2], 10, f"{w_sharpe:.2f}", border=1, align='C')
+                            pdf.cell(m_widths[3], 10, f"{w_stddev:.2%}", border=1, align='C')
+                            pdf.ln(20) # Buffer space before Correlation Matrix
+
+                        if inc_corr and fig_corr is not None:
+                            pdf.set_font("Arial", "B", 14)
+                            pdf.cell(0, 10, "Position Correlation Matrix", ln=True)
+                            try:
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr:
+                                    # Render with explicit width/height to protect labels
+                                    fig_corr.write_image(f_corr.name, format="png", engine="kaleido", width=1000, height=600, scale=2)
+                                    
+                                    # Center Image Mathematically
+                                    img_w = 180
+                                    x_pos = (297 - img_w) / 2
+                                    pdf.image(f_corr.name, x=x_pos, w=img_w)
+                                os.remove(f_corr.name)
+                            except Exception as e:
+                                pdf.set_font("Arial", "", 10)
+                                pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True)
 
                     # Output PDF
                     pdf_output = pdf.output(dest='S')
