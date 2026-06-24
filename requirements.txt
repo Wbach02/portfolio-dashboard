@@ -5,3 +5,5 @@ openpyxl
 numpy
 fpdf
 plotly
+Pillow
+kaleido
