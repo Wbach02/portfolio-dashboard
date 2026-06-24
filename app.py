@@ -95,6 +95,20 @@ def apply_color_logic(val):
     else:
         return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;' # Translucent Gray
 
+def metric_color(val, metric_type):
+    """Custom heatmap logic without requiring matplotlib."""
+    if pd.isna(val) or type(val) == str: return ''
+    try:
+        v = float(val)
+        if metric_type in ['Alpha', 'Sharpe', 'Correlation']:
+            if v > 0: return 'color: #2ca02c; font-weight: bold;'
+            elif v < 0: return 'color: #d62728; font-weight: bold;'
+        elif metric_type in ['Beta', 'Std Dev', 'Max Drawdown']:
+            if metric_type == 'Max Drawdown' and v < -0.2: return 'color: #d62728; font-weight: bold;'
+            if metric_type == 'Beta' and (v > 1.2 or v < 0.8): return 'color: #d62728; font-weight: bold;'
+    except: pass
+    return ''
+
 # --- SECTION 1: ADD POSITIONS ---
 st.header("1. Add Positions")
 col_upload, col_manual = st.columns(2)
@@ -223,11 +237,15 @@ if not st.session_state.portfolio.empty:
         for col in metrics_list[0].keys():
             display_df[col] = [m[col] for m in metrics_list]
         
-        # Save a clean version to session state before formatting strings
+        # Save a clean version to session state with all data
         st.session_state.results_df = display_df.copy()
         
+        # Format the display table without the extra metrics
+        display_cols = ["Ticker", "Amount", "Purchase Date", "Benchmark", "Ticker Return", "Benchmark Return", "Difference"]
+        table_df = display_df[display_cols].copy()
+        
         # Format the table dates string safely
-        display_df['Purchase Date'] = pd.to_datetime(display_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
+        table_df['Purchase Date'] = pd.to_datetime(table_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
         
         format_dict = {
             'Amount': '${:,.2f}',
@@ -236,7 +254,7 @@ if not st.session_state.portfolio.empty:
             'Difference': '{:.2%}'
         }
         
-        styled_df = display_df.style.map(
+        styled_df = table_df.style.map(
             apply_color_logic, subset=['Difference']
         ).map(
             lambda _: 'font-weight: bold;', subset=['Ticker']
@@ -258,8 +276,9 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         total_value = calc_df['Amount'].sum()
         
         # Calculate KPIs
-        port_weighted_return = (calc_df['Amount'] * calc_df['Ticker Return']).sum() / total_value
-        bench_weighted_return = (calc_df['Amount'] * calc_df['Benchmark Return']).sum() / total_value
+        weights = calc_df['Amount'] / total_value
+        port_weighted_return = (calc_df['Ticker Return'] * weights).sum()
+        bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
         # --- KPI Cards ---
@@ -285,7 +304,20 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         # --- Render Risk Metrics Heatmap ---
         st.markdown("**Risk & Return Metrics (Since Purchase Date)**")
         
-        metrics_df = calc_df[['Ticker', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Max Drawdown', 'Correlation']].set_index('Ticker')
+        # Create Weighted Average Row for Metrics
+        weighted_row = pd.DataFrame([{
+            'Ticker': 'Weighted Average',
+            'Alpha': (calc_df['Alpha'] * weights).sum(),
+            'Beta': (calc_df['Beta'] * weights).sum(),
+            'Sharpe': (calc_df['Sharpe'] * weights).sum(),
+            'Std Dev': (calc_df['Std Dev'] * weights).sum(),
+            'Max Drawdown': (calc_df['Max Drawdown'] * weights).sum(),
+            'Correlation': (calc_df['Correlation'] * weights).sum()
+        }])
+        
+        # Combine base metrics with weighted row
+        metrics_display_df = calc_df[['Ticker', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Max Drawdown', 'Correlation']].copy()
+        metrics_df = pd.concat([metrics_display_df, weighted_row], ignore_index=True).set_index('Ticker')
         
         # Tooltip configurations with 'i' hover capability
         metrics_config = {
@@ -297,9 +329,19 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             "Correlation": st.column_config.NumberColumn("Correlation", format="%.2f", help="How closely the asset's movements track the benchmark. 1.0 means perfect correlation.")
         }
         
-        # Apply a background gradient to metrics to act as a heatmap
-        styled_metrics = metrics_df.style.background_gradient(cmap="RdYlGn", subset=['Alpha', 'Sharpe', 'Correlation']) \
-                                         .background_gradient(cmap="RdYlGn_r", subset=['Beta', 'Std Dev', 'Max Drawdown'])
+        def highlight_weighted(row):
+            if row.name == 'Weighted Average':
+                return ['background-color: rgba(127, 127, 127, 0.2); font-weight: bold;'] * len(row)
+            return [''] * len(row)
+
+        # Apply crash-proof, logic-based styling instead of matplotlib gradient
+        styled_metrics = metrics_df.style.map(lambda v: metric_color(v, 'Alpha'), subset=['Alpha']) \
+                                         .map(lambda v: metric_color(v, 'Beta'), subset=['Beta']) \
+                                         .map(lambda v: metric_color(v, 'Sharpe'), subset=['Sharpe']) \
+                                         .map(lambda v: metric_color(v, 'Std Dev'), subset=['Std Dev']) \
+                                         .map(lambda v: metric_color(v, 'Max Drawdown'), subset=['Max Drawdown']) \
+                                         .map(lambda v: metric_color(v, 'Correlation'), subset=['Correlation']) \
+                                         .apply(highlight_weighted, axis=1)
                                          
         st.dataframe(styled_metrics, use_container_width=True, column_config=metrics_config)
 
@@ -382,15 +424,16 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(0, 10, "Risk & Return Metrics", ln=True)
                         pdf.set_font("Arial", "B", 9)
                         
-                        m_widths = [20, 25, 25, 30, 30, 30, 25]
+                        m_widths = [35, 20, 20, 20, 25, 25, 20]
                         m_headers = ['Ticker', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Max DD', 'Corr']
                         for i in range(len(m_headers)):
                             pdf.cell(m_widths[i], 10, m_headers[i], border=1, align='C')
                         pdf.ln()
                         
                         pdf.set_font("Arial", "", 8)
-                        for idx, row in calc_df.iterrows():
-                            pdf.cell(m_widths[0], 8, str(row['Ticker']), border=1)
+                        for idx, row in metrics_df.iterrows():
+                            # idx represents the Ticker or "Weighted Average" string
+                            pdf.cell(m_widths[0], 8, str(idx)[:16], border=1)
                             pdf.cell(m_widths[1], 8, f"{row['Alpha']:.4f}", border=1, align='R')
                             pdf.cell(m_widths[2], 8, f"{row['Beta']:.2f}", border=1, align='R')
                             pdf.cell(m_widths[3], 8, f"{row['Sharpe']:.2f}", border=1, align='R')
