@@ -223,11 +223,13 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         
         format_dict = {'Amount': '${:,.2f}', 'Ticker Return': '{:.2%}', 'Benchmark Return': '{:.2%}', 'Difference': '{:.2%}'}
         
+        # We add 'white-space: normal' to force the Streamlit UI to wrap long security names!
         styled_df = table_df.style.map(apply_color_logic, subset=['Difference']) \
             .map(lambda _: 'font-weight: bold;', subset=['Ticker']) \
-            .set_properties(**{'font-size': '110%'}).format(format_dict, na_rep="Data Unavailable")
+            .set_properties(**{'font-size': '110%', 'white-space': 'normal'}).format(format_dict, na_rep="Data Unavailable")
             
         st.dataframe(styled_df, use_container_width=True, column_config={
+            "Security Name": st.column_config.TextColumn("Security Name", width="large"),
             "Type": st.column_config.TextColumn("Type", help="Describes whether the asset is an Equity, ETF, Mutual Fund, etc.")
         })
 
@@ -326,7 +328,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     pdf.add_page()
                     pdf.set_auto_page_break(auto=True, margin=15)
                     
-                    # Robust Logo Processing (Converts to RGB JPEG to avoid PNG Alpha crashes)
+                    # Robust Logo Processing
                     if logo_upload is not None:
                         try:
                             img = Image.open(logo_upload).convert("RGB")
@@ -356,7 +358,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(0, 8, f"Weighted Benchmark Return: {bench_weighted_return:.2%}", ln=True)
                         pdf.ln(5)
                     
-                    # 2. Holdings Table (With Dynamic Columns & Text Wrapping)
+                    # 2. Holdings Table (With Dynamic Columns & Improved Text Wrapping)
                     if inc_holdings and len(selected_pdf_cols) > 0:
                         pdf.set_font("Arial", "B", 14)
                         pdf.cell(0, 10, "Performance Report", ln=True)
@@ -385,8 +387,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             date_str = row['Purchase Date'].strftime('%m/%d/%Y') if hasattr(row['Purchase Date'], 'strftime') else str(row['Purchase Date']).split(' ')[0]
                             sec_name = str(row.get('Security Name', row['Ticker']))
                             
-                            # Text Wrapping Logic for Security Name
-                            wrapped_name = textwrap.fill(sec_name, width=35) # Safely wrap at ~35 chars
+                            # Improved Text Wrapping: Forces breaks on long unspaced words
+                            wrapped_name = textwrap.fill(sec_name, width=30, break_long_words=True)
                             lines = wrapped_name.count('\n') + 1
                             row_height = 8 * lines
                             
@@ -442,7 +444,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             os.remove(f_bar.name)
                         except Exception as e:
                             pdf.set_font("Arial", "", 10)
-                            pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True)
+                            pdf.cell(0, 10, f"Chart could not be generated. Please ensure you are running Python 3.9 in the Streamlit Settings or have 'chromium' installed via packages.txt.", ln=True)
                         pdf.ln(10)
 
                     # 4. Risk Metrics Summary
@@ -479,7 +481,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             os.remove(f_corr.name)
                         except Exception as e:
                             pdf.set_font("Arial", "", 10)
-                            pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True)
+                            pdf.cell(0, 10, f"Chart could not be generated. Please ensure you are running Python 3.9 in the Streamlit Settings or have 'chromium' installed via packages.txt.", ln=True)
 
                     # Output PDF
                     pdf_output = pdf.output(dest='S')
