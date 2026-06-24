@@ -2,6 +2,10 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import datetime
+import numpy as np
+from fpdf import FPDF
+import tempfile
+import os
 
 st.set_page_config(page_title="Portfolio Performance", layout="wide")
 st.title("Portfolio Performance Dashboard")
@@ -27,17 +31,56 @@ def get_benchmark(ticker):
     else:
         return 'SPY' 
 
-def calculate_return(ticker, start_date):
-    """Pulls data from Yahoo Finance and calculates total return including dividends."""
+def fetch_risk_metrics(ticker, benchmark, start_date):
+    """Fetches historical data to calculate Total Return and Risk Metrics."""
     try:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(start=start_date, auto_adjust=True)
-        if hist.empty:
+        data = yf.download([ticker, benchmark], start=start_date, progress=False)['Close']
+        if data.empty or len(data.columns) < 2:
             return None
+            
+        t_data = data[ticker].dropna()
+        b_data = data[benchmark].dropna()
         
-        initial_price = hist['Close'].iloc[0]
-        current_price = hist['Close'].iloc[-1]
-        return (current_price - initial_price) / initial_price
+        # Total Returns
+        t_ret_total = (t_data.iloc[-1] - t_data.iloc[0]) / t_data.iloc[0]
+        b_ret_total = (b_data.iloc[-1] - b_data.iloc[0]) / b_data.iloc[0]
+        
+        # Daily Returns for Risk Metrics
+        t_ret_daily = t_data.pct_change().dropna()
+        b_ret_daily = b_data.pct_change().dropna()
+        
+        # Align dates
+        aligned = pd.concat([t_ret_daily, b_ret_daily], axis=1, join='inner').dropna()
+        if aligned.empty:
+            return None
+            
+        t_aligned = aligned.iloc[:, 0]
+        b_aligned = aligned.iloc[:, 1]
+        
+        # Metrics Calculations
+        std_dev = t_aligned.std() * np.sqrt(252)
+        correlation = t_aligned.corr(b_aligned)
+        cov = t_aligned.cov(b_aligned)
+        var = b_aligned.var()
+        beta = cov / var if var != 0 else 1.0
+        alpha = (t_aligned.mean() - (beta * b_aligned.mean())) * 252
+        sharpe = (t_aligned.mean() * 252) / std_dev if std_dev != 0 else 0
+        
+        # Max Drawdown
+        cum_ret = (1 + t_aligned).cumprod()
+        peak = cum_ret.cummax()
+        max_dd = ((cum_ret - peak) / peak).min()
+        
+        return {
+            't_ret': t_ret_total,
+            'b_ret': b_ret_total,
+            'alpha': alpha,
+            'beta': beta,
+            'sharpe': sharpe,
+            'std_dev': std_dev,
+            'max_dd': max_dd,
+            'correlation': correlation
+        }
     except Exception as e:
         return None
 
@@ -152,31 +195,38 @@ st.header("3. Performance Report")
 if not st.session_state.portfolio.empty:
     if st.button("Run Performance Calculation", type="primary"):
         display_df = st.session_state.portfolio.copy()
-        ticker_perfs, bench_perfs, differences = [], [], []
         
-        with st.spinner('Fetching live market data...'):
+        metrics_list = []
+        
+        with st.spinner('Fetching live market data and calculating risk metrics...'):
             for index, row in display_df.iterrows():
                 start_d = row['Purchase Date'].strftime('%Y-%m-%d')
                 
-                # Pull performance using the editable benchmark column
-                t_perf = calculate_return(row['Ticker'], start_d)
-                b_perf = calculate_return(row['Benchmark'], start_d)
+                metrics = fetch_risk_metrics(row['Ticker'], row['Benchmark'], start_d)
                 
-                if t_perf is not None and b_perf is not None:
-                    diff = t_perf - b_perf
-                    ticker_perfs.append(t_perf)
-                    bench_perfs.append(b_perf)
-                    differences.append(diff)
+                if metrics is not None:
+                    metrics_list.append({
+                        'Ticker Return': metrics['t_ret'],
+                        'Benchmark Return': metrics['b_ret'],
+                        'Difference': metrics['t_ret'] - metrics['b_ret'],
+                        'Alpha': metrics['alpha'],
+                        'Beta': metrics['beta'],
+                        'Sharpe': metrics['sharpe'],
+                        'Std Dev': metrics['std_dev'],
+                        'Max Drawdown': metrics['max_dd'],
+                        'Correlation': metrics['correlation']
+                    })
                 else:
-                    ticker_perfs.extend([None])
-                    bench_perfs.extend([None])
-                    differences.extend([None])
+                    metrics_list.append({k: None for k in ['Ticker Return', 'Benchmark Return', 'Difference', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Max Drawdown', 'Correlation']})
                     
-        display_df['Ticker Return'] = ticker_perfs
-        display_df['Benchmark Return'] = bench_perfs
-        display_df['Difference'] = differences
+        # Append metrics to dataframe
+        for col in metrics_list[0].keys():
+            display_df[col] = [m[col] for m in metrics_list]
         
-        # THE BULLETPROOF TRICK: Format to exact MM/DD/YYYY and add a zero-width space (\u200b)
+        # Save a clean version to session state before formatting strings
+        st.session_state.results_df = display_df.copy()
+        
+        # Format the table dates string safely
         display_df['Purchase Date'] = pd.to_datetime(display_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
         
         format_dict = {
@@ -186,7 +236,6 @@ if not st.session_state.portfolio.empty:
             'Difference': '{:.2%}'
         }
         
-        # Apply all stylings: colors, bold ticker, and 10% larger font
         styled_df = display_df.style.map(
             apply_color_logic, subset=['Difference']
         ).map(
@@ -195,52 +244,169 @@ if not st.session_state.portfolio.empty:
             **{'font-size': '110%'}
         ).format(format_dict, na_rep="Data Unavailable")
         
-        # Display the dataframe as standard text so Streamlit respects the styling
         st.dataframe(styled_df, use_container_width=True)
-# --- SECTION 4: VISUAL SUMMARY ---
+
+if 'results_df' in st.session_state and st.session_state.results_df is not None:
+    res = st.session_state.results_df
+    calc_df = res.dropna(subset=['Ticker Return', 'Benchmark Return']).copy()
+    
+    if not calc_df.empty:
+        # --- SECTION 4: VISUAL SUMMARY & METRICS ---
         st.divider()
-        st.subheader("📊 Portfolio Summary")
+        st.subheader("📊 Portfolio Summary & Risk Metrics")
         
-        # 1. Filter out any rows where Yahoo Finance couldn't find data
-        calc_df = display_df.dropna(subset=['Ticker Return', 'Benchmark Return']).copy()
+        total_value = calc_df['Amount'].sum()
         
-        if not calc_df.empty:
-            # Calculate Total Market Value
-            total_value = calc_df['Amount'].sum()
+        # Calculate KPIs
+        port_weighted_return = (calc_df['Amount'] * calc_df['Ticker Return']).sum() / total_value
+        bench_weighted_return = (calc_df['Amount'] * calc_df['Benchmark Return']).sum() / total_value
+        weighted_diff = port_weighted_return - bench_weighted_return
+        
+        # --- KPI Cards ---
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("Total Portfolio Value", f"${total_value:,.2f}")
+        with m2:
+            st.metric("Weighted Portfolio Return", f"{port_weighted_return:.2%}", delta=f"{weighted_diff:.2%} vs Benchmark")
+        with m3:
+            st.metric("Weighted Benchmark Return", f"{bench_weighted_return:.2%}")
             
-            # The 'Sumproduct' Equivalent: (Amount * Return) / Total Value
-            port_weighted_return = (calc_df['Amount'] * calc_df['Ticker Return']).sum() / total_value
-            bench_weighted_return = (calc_df['Amount'] * calc_df['Benchmark Return']).sum() / total_value
-            weighted_diff = port_weighted_return - bench_weighted_return
+        st.write("") 
+
+        # --- Render Performance Bar Chart ---
+        st.markdown("**Asset vs Benchmark Performance**")
+        chart_df = calc_df[['Ticker', 'Ticker Return', 'Benchmark Return']].set_index('Ticker')
+        
+        # Plot Bar Chart with Dark Green (Assets) vs Light Green (Benchmark)
+        st.bar_chart(chart_df, height=400, color=["#136207", "#77DD77"])
+        
+        st.write("")
+        
+        # --- Render Risk Metrics Heatmap ---
+        st.markdown("**Risk & Return Metrics (Since Purchase Date)**")
+        
+        metrics_df = calc_df[['Ticker', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Max Drawdown', 'Correlation']].set_index('Ticker')
+        
+        # Tooltip configurations with 'i' hover capability
+        metrics_config = {
+            "Alpha": st.column_config.NumberColumn("Alpha", format="%.4f", help="Measures the excess return of the asset relative to the benchmark's return. Positive alpha means outperformance."),
+            "Beta": st.column_config.NumberColumn("Beta", format="%.2f", help="Measures the asset's volatility relative to the benchmark. <1 is less volatile, >1 is more volatile."),
+            "Sharpe": st.column_config.NumberColumn("Sharpe Ratio", format="%.2f", help="Measures risk-adjusted return. Indicates how much excess return is received for the extra volatility. Higher is better."),
+            "Std Dev": st.column_config.NumberColumn("Standard Deviation", format="%.2%", help="A measure of the asset's absolute volatility/risk over the period."),
+            "Max Drawdown": st.column_config.NumberColumn("Max Drawdown", format="%.2%", help="The maximum observed loss from a peak to a trough during the period."),
+            "Correlation": st.column_config.NumberColumn("Correlation", format="%.2f", help="How closely the asset's movements track the benchmark. 1.0 means perfect correlation.")
+        }
+        
+        # Apply a background gradient to metrics to act as a heatmap
+        styled_metrics = metrics_df.style.background_gradient(cmap="RdYlGn", subset=['Alpha', 'Sharpe', 'Correlation']) \
+                                         .background_gradient(cmap="RdYlGn_r", subset=['Beta', 'Std Dev', 'Max Drawdown'])
+                                         
+        st.dataframe(styled_metrics, use_container_width=True, column_config=metrics_config)
+
+        # --- SECTION 5: REPORT GENERATION ---
+        st.divider()
+        st.subheader("📄 Generate Client PDF Report")
+        
+        col_pdf_1, col_pdf_2 = st.columns(2)
+        with col_pdf_1:
+            client_name = st.text_input("Client Name", placeholder="e.g. Jane Doe")
+            logo_upload = st.file_uploader("Upload Company Logo (PNG/JPG)", type=['png', 'jpg', 'jpeg'])
+        with col_pdf_2:
+            st.markdown("**Select Sections to Include:**")
+            inc_holdings = st.checkbox("Include Holdings Table", value=True)
+            inc_metrics = st.checkbox("Include Risk Metrics", value=True)
             
-            # --- Render KPI Cards ---
-            m1, m2, m3 = st.columns(3)
-            
-            with m1:
-                st.metric(
-                    label="Total Portfolio Value", 
-                    value=f"${total_value:,.2f}"
-                )
-            with m2:
-                st.metric(
-                    label="Weighted Portfolio Return", 
-                    value=f"{port_weighted_return:.2%}", 
-                    delta=f"{weighted_diff:.2%} vs Benchmark",
-                    delta_color="normal" # Automatically colors positive green, negative red
-                )
-            with m3:
-                st.metric(
-                    label="Weighted Benchmark Return", 
-                    value=f"{bench_weighted_return:.2%}"
-                )
-                
-            st.write("") # Adds a little visual spacing
-            
-            # --- Render Performance Bar Chart ---
-            st.markdown("**Asset vs Benchmark Performance**")
-            
-            # Restructure data specifically for Streamlit's native charting
-            chart_df = calc_df[['Ticker', 'Ticker Return', 'Benchmark Return']].set_index('Ticker')
-            
-            # Display interactive bar chart
-            st.bar_chart(chart_df, height=400)
+        if st.button("Generate PDF", type="primary"):
+            if not client_name:
+                st.warning("Please enter a Client Name.")
+            else:
+                with st.spinner("Building PDF..."):
+                    pdf = FPDF()
+                    pdf.add_page()
+                    pdf.set_auto_page_break(auto=True, margin=15)
+                    
+                    # Header
+                    if logo_upload is not None:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
+                            tmp_file.write(logo_upload.getvalue())
+                            logo_path = tmp_file.name
+                        try:
+                            pdf.image(logo_path, x=10, y=8, w=30)
+                            os.remove(logo_path)
+                        except:
+                            pass 
+                            
+                    pdf.set_font("Arial", "B", 16)
+                    pdf.cell(0, 10, f"Portfolio Performance Report", ln=True, align="C")
+                    pdf.set_font("Arial", "", 12)
+                    pdf.cell(0, 10, f"Prepared for: {client_name}", ln=True, align="C")
+                    pdf.cell(0, 10, f"Date: {datetime.datetime.now().strftime('%B %d, %Y')}", ln=True, align="C")
+                    pdf.ln(10)
+                    
+                    # KPI Summary
+                    pdf.set_font("Arial", "B", 14)
+                    pdf.cell(0, 10, "Portfolio Summary", ln=True)
+                    pdf.set_font("Arial", "", 11)
+                    pdf.cell(0, 8, f"Total Portfolio Value: ${total_value:,.2f}", ln=True)
+                    pdf.cell(0, 8, f"Weighted Portfolio Return: {port_weighted_return:.2%}", ln=True)
+                    pdf.cell(0, 8, f"Weighted Benchmark Return: {bench_weighted_return:.2%}", ln=True)
+                    pdf.ln(10)
+                    
+                    # Holdings Table
+                    if inc_holdings:
+                        pdf.set_font("Arial", "B", 14)
+                        pdf.cell(0, 10, "Current Holdings & Returns", ln=True)
+                        pdf.set_font("Arial", "B", 10)
+                        
+                        col_widths = [25, 40, 35, 40, 40]
+                        headers = ['Ticker', 'Amount', 'P. Date', 'Asset Ret.', 'Bench Ret.']
+                        for i in range(len(headers)):
+                            pdf.cell(col_widths[i], 10, headers[i], border=1, align='C')
+                        pdf.ln()
+                        
+                        pdf.set_font("Arial", "", 9)
+                        for idx, row in calc_df.iterrows():
+                            # Format date properly
+                            date_str = row['Purchase Date'].strftime('%m/%d/%Y') if hasattr(row['Purchase Date'], 'strftime') else str(row['Purchase Date']).split(' ')[0]
+                            pdf.cell(col_widths[0], 8, str(row['Ticker']), border=1)
+                            pdf.cell(col_widths[1], 8, f"${row['Amount']:,.2f}", border=1, align='R')
+                            pdf.cell(col_widths[2], 8, date_str, border=1, align='C')
+                            pdf.cell(col_widths[3], 8, f"{row['Ticker Return']:.2%}", border=1, align='R')
+                            pdf.cell(col_widths[4], 8, f"{row['Benchmark Return']:.2%}", border=1, align='R')
+                            pdf.ln()
+                        pdf.ln(10)
+                        
+                    # Risk Metrics Table
+                    if inc_metrics:
+                        pdf.set_font("Arial", "B", 14)
+                        pdf.cell(0, 10, "Risk & Return Metrics", ln=True)
+                        pdf.set_font("Arial", "B", 9)
+                        
+                        m_widths = [20, 25, 25, 30, 30, 30, 25]
+                        m_headers = ['Ticker', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Max DD', 'Corr']
+                        for i in range(len(m_headers)):
+                            pdf.cell(m_widths[i], 10, m_headers[i], border=1, align='C')
+                        pdf.ln()
+                        
+                        pdf.set_font("Arial", "", 8)
+                        for idx, row in calc_df.iterrows():
+                            pdf.cell(m_widths[0], 8, str(row['Ticker']), border=1)
+                            pdf.cell(m_widths[1], 8, f"{row['Alpha']:.4f}", border=1, align='R')
+                            pdf.cell(m_widths[2], 8, f"{row['Beta']:.2f}", border=1, align='R')
+                            pdf.cell(m_widths[3], 8, f"{row['Sharpe']:.2f}", border=1, align='R')
+                            pdf.cell(m_widths[4], 8, f"{row['Std Dev']:.2%}", border=1, align='R')
+                            pdf.cell(m_widths[5], 8, f"{row['Max Drawdown']:.2%}", border=1, align='R')
+                            pdf.cell(m_widths[6], 8, f"{row['Correlation']:.2f}", border=1, align='R')
+                            pdf.ln()
+
+                    # Output PDF bytes
+                    pdf_output = pdf.output(dest='S')
+                    pdf_bytes = pdf_output.encode('latin-1') if isinstance(pdf_output, str) else bytes(pdf_output)
+                    
+                    st.success("PDF generated successfully!")
+                    st.download_button(
+                        label="⬇️ Download PDF Report",
+                        data=pdf_bytes,
+                        file_name=f"{client_name.replace(' ', '_')}_Portfolio_Report.pdf",
+                        mime="application/pdf"
+                    )
