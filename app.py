@@ -120,6 +120,18 @@ def apply_color_logic(val):
     elif val < -0.02: return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;'
     else: return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;'
 
+def save_plotly_as_jpg(fig, width, height):
+    """Saves a Plotly figure to a flat JPEG, destroying the alpha layer that turns black in FPDF."""
+    tmp_png = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+    tmp_jpg = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+    fig.write_image(tmp_png, format="png", engine="kaleido", width=width, height=height, scale=2)
+    img = Image.open(tmp_png).convert("RGBA")
+    bg = Image.new("RGB", img.size, (255, 255, 255))
+    bg.paste(img, mask=img.split()[3])
+    bg.save(tmp_jpg, format="JPEG")
+    os.remove(tmp_png)
+    return tmp_jpg
+
 # --- SECTION 1: ADD POSITIONS ---
 st.header("1. Add Positions")
 col_upload, col_manual = st.columns(2)
@@ -304,9 +316,24 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             """, unsafe_allow_html=True)
             
         with col_pie:
+            # Aggregating tickers and amounts for the hover tooltip logic
+            hover_data = []
+            for sector, group in calc_df.groupby('Sector'):
+                group = group.sort_values('Amount', ascending=False)
+                lines = [f"{row['Ticker']}: ${row['Amount']:,.0f}" for _, row in group.iterrows()]
+                hover_data.append({'Sector': sector, 'HoverText': '<br>'.join(lines)})
+            
+            hover_df = pd.DataFrame(hover_data)
             sector_df = calc_df.groupby('Sector', as_index=False)['Amount'].sum()
-            fig_pie = px.pie(sector_df, values='Amount', names='Sector', hole=0.4)
-            fig_pie.update_traces(textposition='inside', textinfo='percent+label', textfont_size=16)
+            sector_df = pd.merge(sector_df, hover_df, on='Sector')
+
+            fig_pie = px.pie(sector_df, values='Amount', names='Sector', hole=0.4, custom_data=['HoverText'])
+            fig_pie.update_traces(
+                textposition='inside', 
+                textinfo='percent+label', 
+                textfont_size=16,
+                hovertemplate="<b>%{label}</b><br><br>%{customdata[0]}<extra></extra>"
+            )
             fig_pie.update_layout(
                 margin=dict(l=20, r=20, t=20, b=20), 
                 legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5),
@@ -464,18 +491,17 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_pie_file:
-                                f_pie = f_pie_file.name
-                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
-                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
-                                # Force white backgrounds to prevent Kaleido black box bugs
-                                fig_pie_pdf.update_layout(
-                                    showlegend=False, 
-                                    margin=dict(t=10, b=10, l=10, r=10),
-                                    paper_bgcolor='white',
-                                    plot_bgcolor='white'
-                                )
-                                fig_pie_pdf.write_image(f_pie, format="png", engine="kaleido", width=900, height=900, scale=2)
+                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
+                            fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
+                            # Force white backgrounds to prevent Kaleido black box bugs
+                            fig_pie_pdf.update_layout(
+                                showlegend=False, 
+                                margin=dict(t=10, b=10, l=10, r=10),
+                                paper_bgcolor='white',
+                                plot_bgcolor='white'
+                            )
+                            # Flat JPG generator solves the alpha-transparency black box rendering bug
+                            f_pie = save_plotly_as_jpg(fig_pie_pdf, 900, 900)
                         except Exception:
                             pass
 
@@ -634,90 +660,91 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(0, 15, "Asset vs Benchmark Performance", ln=True, align="L")
                         pdf.ln(5)
                         try:
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_bar:
-                                fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
-                                                     color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
-                                fig_bar_pdf.update_layout(
-                                    yaxis_tickformat='.2%', 
-                                    margin=dict(l=140, r=20, t=20, b=50), 
-                                    legend_title_text='',
-                                    font=dict(size=26), 
-                                    xaxis=dict(title="", tickfont=dict(size=26)),
-                                    yaxis=dict(title="", tickfont=dict(size=26)),
-                                    legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                                    paper_bgcolor='white',
-                                    plot_bgcolor='white'
-                                )
-                                fig_bar_pdf.write_image(f_bar.name, format="png", engine="kaleido", width=1400, height=650, scale=2)
-                                
-                                img_w = 277 
-                                x_pos = 10
-                                pdf.image(f_bar.name, x=x_pos, w=img_w)
-                            os.remove(f_bar.name)
+                            fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
+                                                 color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
+                            fig_bar_pdf.update_layout(
+                                yaxis_tickformat='.2%', 
+                                margin=dict(l=140, r=20, t=20, b=50), 
+                                legend_title_text='',
+                                font=dict(size=26), 
+                                xaxis=dict(title="", tickfont=dict(size=26)),
+                                yaxis=dict(title="", tickfont=dict(size=26)),
+                                legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                paper_bgcolor='white',
+                                plot_bgcolor='white'
+                            )
+                            f_bar_jpg = save_plotly_as_jpg(fig_bar_pdf, 1400, 650)
+                            
+                            img_w = 277 
+                            x_pos = 10
+                            pdf.image(f_bar_jpg, x=x_pos, w=img_w)
+                            os.remove(f_bar_jpg)
                         except Exception as e:
                             pdf.set_font("Arial", "", 12)
                             pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
 
                     # --- PAGE 5: RISK METRICS & CORRELATION MATRIX ---
-                    if inc_risk:
+                    if inc_risk or inc_corr:
                         pdf.add_page(orientation='L')
                         
-                        pdf.set_font("Arial", "B", 26)
-                        pdf.cell(0, 15, "Risk & Correlation Analysis", ln=True, align="L")
-                        pdf.ln(5)
-                        
-                        # Shrunk by 10% to ensure fit
-                        r_box_w = 55
-                        spacing = 5
-                        total_r_w = (r_box_w * 4) + (spacing * 3)
-                        x_r_start = (297 - total_r_w) / 2
-                        
-                        m_data = [
-                            ("Weighted Alpha", f"{w_alpha:.4f}"),
-                            ("Weighted Beta", f"{w_beta:.2f}"),
-                            ("Weighted Sharpe", f"{w_sharpe:.2f}"),
-                            ("Weighted Std Dev", f"{w_stddev:.2%}")
-                        ]
-                        
-                        pdf.set_y(pdf.get_y())
-                        for title, val in m_data:
-                            pdf.set_x(x_r_start)
-                            pdf.set_fill_color(27, 79, 49)
-                            pdf.set_text_color(255, 255, 255)
-                            pdf.set_font("Arial", "B", 11) 
-                            pdf.cell(r_box_w, 10, title, border=1, align='C', fill=True)
+                        if inc_risk:
+                            pdf.set_font("Arial", "B", 22) # Font shrunk 10% from 26
+                            pdf.cell(0, 10, "Risk & Correlation Analysis", ln=True, align="L")
+                            pdf.ln(5)
                             
-                            pdf.set_xy(x_r_start, pdf.get_y() + 10)
-                            pdf.set_fill_color(245, 247, 245)
-                            pdf.set_text_color(0, 0, 0)
-                            pdf.set_font("Arial", "B", 16)
-                            pdf.cell(r_box_w, 14, val, border=1, align='C', fill=True)
+                            # Boxes Shrunk by 10% to ensure large matrix space
+                            r_box_w = 45 
+                            spacing = 4
+                            total_r_w = (r_box_w * 4) + (spacing * 3)
+                            x_r_start = (297 - total_r_w) / 2
                             
-                            x_r_start += r_box_w + spacing
-                            pdf.set_y(pdf.get_y() - 10) 
+                            m_data = [
+                                ("Weighted Alpha", f"{w_alpha:.4f}"),
+                                ("Weighted Beta", f"{w_beta:.2f}"),
+                                ("Weighted Sharpe", f"{w_sharpe:.2f}"),
+                                ("Weighted Std Dev", f"{w_stddev:.2%}")
+                            ]
                             
-                        pdf.ln(28) # Shrunk padding to merge seamlessly 
+                            y_boxes_start = pdf.get_y()
+                            for title, val in m_data:
+                                pdf.set_x(x_r_start)
+                                pdf.set_fill_color(27, 79, 49)
+                                pdf.set_text_color(255, 255, 255)
+                                pdf.set_font("Arial", "B", 10) 
+                                pdf.cell(r_box_w, 8, title, border=1, align='C', fill=True)
+                                
+                                pdf.set_xy(x_r_start, y_boxes_start + 8)
+                                pdf.set_fill_color(245, 247, 245)
+                                pdf.set_text_color(0, 0, 0)
+                                pdf.set_font("Arial", "B", 14)
+                                pdf.cell(r_box_w, 12, val, border=1, align='C', fill=True)
+                                
+                                x_r_start += r_box_w + spacing
+                                pdf.set_y(y_boxes_start) 
+                                
+                            pdf.set_y(y_boxes_start + 20)
+                            pdf.ln(10) # Minimized padding to merge seamlessly 
 
-                        if fig_corr is not None:
+                        if inc_corr and fig_corr is not None:
                             try:
-                                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr:
-                                    fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
-                                                             zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                    # Force white background, size 14 labels (prevents cell text overlap), angle labels
-                                    fig_corr_pdf.update_layout(
-                                        margin=dict(l=60, r=20, t=10, b=60), 
-                                        font=dict(size=14),
-                                        xaxis_tickangle=-45,
-                                        paper_bgcolor='white',
-                                        plot_bgcolor='white'
-                                    )
-                                    fig_corr_pdf.write_image(f_corr.name, format="png", engine="kaleido", width=1000, height=500, scale=2)
-                                    
-                                    img_w = 200
-                                    x_pos = (297 - img_w) / 2
-                                    current_y = pdf.get_y()
-                                    pdf.image(f_corr.name, x=x_pos, y=current_y, w=img_w)
-                                os.remove(f_corr.name)
+                                fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
+                                                         zmin=-1, zmax=1, aspect="auto")
+                                # Size 12 fonts, massive margins, rotated 45deg labels to prevent ALL overlap
+                                fig_corr_pdf.update_layout(
+                                    margin=dict(l=100, r=20, t=10, b=100), 
+                                    font=dict(size=12),
+                                    xaxis_tickangle=-45,
+                                    paper_bgcolor='white',
+                                    plot_bgcolor='white'
+                                )
+                                f_corr_jpg = save_plotly_as_jpg(fig_corr_pdf, 1100, 600)
+                                
+                                # Giant 240mm width centered perfectly
+                                img_w = 240
+                                x_pos = (297 - img_w) / 2
+                                current_y = pdf.get_y()
+                                pdf.image(f_corr_jpg, x=x_pos, y=current_y, w=img_w)
+                                os.remove(f_corr_jpg)
                             except Exception as e:
                                 pdf.set_font("Arial", "", 12)
                                 pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
