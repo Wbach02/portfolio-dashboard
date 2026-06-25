@@ -42,6 +42,15 @@ def standardize_type(raw_type):
     if 'STOCK' in t_upper or 'EQUITY' in t_upper: return 'Stock'
     return str(raw_type)
 
+def standardize_sector(sector):
+    """Applies professional nicknames to long sector/category strings."""
+    mapping = {
+        "Communication Services": "Communication",
+        "Commodities Focused": "Commodities",
+        "Energy Limited Partnership": "Energy"
+    }
+    return mapping.get(sector, sector)
+
 @st.cache_data
 def fetch_security_details(ticker):
     """Fetches the official company name, asset type, and sector from Yahoo Finance."""
@@ -57,7 +66,7 @@ def fetch_security_details(ticker):
         if not sector: sector = info.get('industry')
         if not sector: sector = 'Other'
         
-        return name, standardize_type(qtype), sector
+        return name, standardize_type(qtype), standardize_sector(sector)
     except:
         return ticker, 'Unknown', 'Other'
 
@@ -146,6 +155,8 @@ with col_upload:
                     df['Sector'] = df['Ticker'].map(lambda x: details_dict.get(x, ('', '', 'Other'))[2])
                 
                 df['Type'] = df['Type'].apply(standardize_type)
+                df['Sector'] = df['Sector'].apply(standardize_sector)
+                
                 df = df[["Security Name", "Type", "Sector", "Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
                 
                 if df['Amount'].dtype == 'object':
@@ -261,15 +272,13 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
-        # DYNAMIC HIGHLIGHT LOGIC (Opposing Colors)
         if port_weighted_return >= bench_weighted_return:
-            port_bg, port_txt = "#d4edda", "#155724" # Green
-            bench_bg, bench_txt = "#f8d7da", "#721c24" # Red
+            port_bg, port_txt = "#d4edda", "#155724" 
+            bench_bg, bench_txt = "#f8d7da", "#721c24" 
         else:
-            port_bg, port_txt = "#f8d7da", "#721c24" # Red
-            bench_bg, bench_txt = "#d4edda", "#155724" # Green
+            port_bg, port_txt = "#f8d7da", "#721c24" 
+            bench_bg, bench_txt = "#d4edda", "#155724" 
 
-        # Dashboard Summary Layout (Numbers on Left, Pie on Right)
         col_kpi, col_pie = st.columns([1, 1.2])
         
         with col_kpi:
@@ -380,8 +389,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             inc_summary = st.checkbox("Portfolio Summary & Sector Pie", value=True)
             inc_holdings = st.checkbox("Performance Report Table", value=True)
             inc_bar = st.checkbox("Asset vs Benchmark Bar Chart", value=True)
-            inc_risk = st.checkbox("Weighted Risk Summary", value=True)
-            inc_corr = st.checkbox("Position Correlation Matrix", value=True)
+            inc_risk = st.checkbox("Risk & Correlation Analysis", value=True)
             
         if st.button("Generate PDF", type="primary"):
             if not client_name:
@@ -402,19 +410,18 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                 self.set_font("Arial", "I", 10)
                                 self.set_text_color(150, 150, 150)
                                 self.cell(0, 8, f"Portfolio Performance Report - {self.client_name}", ln=True, align="R")
-                                self.ln(5)
+                                self.ln(2)
                                 
                         def footer(self):
                             if self.page_no() > 1:
-                                self.set_y(-15)
+                                self.set_y(-18)
                                 self.set_font("Arial", "I", 9)
                                 self.set_text_color(150, 150, 150)
                                 self.cell(0, 10, f"Page {self.page_no()}", align="C")
                                 if self.logo_path and os.path.exists(self.logo_path):
-                                    # Print logo in bottom right corner of all pages
-                                    self.image(self.logo_path, x=270, y=188, w=18)
+                                    # Increased size in bottom right corner (from w=18 to w=25)
+                                    self.image(self.logo_path, x=262, y=182, w=25)
 
-                    # Prepare Logo Path
                     logo_path = None
                     if logo_upload is not None:
                         try:
@@ -441,12 +448,11 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     pdf.cell(0, 10, f"Prepared for: {client_name}", ln=True, align="C")
                     pdf.cell(0, 10, f"Date: {datetime.datetime.now().strftime('%B %d, %Y')}", ln=True, align="C")
                     
-                    pdf.ln(35)
                     if logo_path:
-                        # Massive, centered cover page logo
-                        img_w = 180
+                        # Scaled down enough to stay on Page 1, pushed to absolute bottom center
+                        img_w = 90
                         x_pos = (297 - img_w) / 2
-                        pdf.image(logo_path, x=x_pos, w=img_w)
+                        pdf.image(logo_path, x=x_pos, y=140, w=img_w)
 
                     # --- PAGE 2: PORTFOLIO SUMMARY & PIE CHART ---
                     if inc_summary:
@@ -456,19 +462,23 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(0, 15, "Portfolio Summary", ln=True, align="L")
                         pdf.ln(10)
                         
-                        # High-Res PDF Pie Chart
                         f_pie = None
                         try:
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_pie_file:
                                 f_pie = f_pie_file.name
                                 fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
                                 fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
-                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10))
+                                # Force white backgrounds to prevent Kaleido black box bugs
+                                fig_pie_pdf.update_layout(
+                                    showlegend=False, 
+                                    margin=dict(t=10, b=10, l=10, r=10),
+                                    paper_bgcolor='white',
+                                    plot_bgcolor='white'
+                                )
                                 fig_pie_pdf.write_image(f_pie, format="png", engine="kaleido", width=900, height=900, scale=2)
                         except Exception:
                             pass
 
-                        # PDF Colors 
                         if port_weighted_return >= bench_weighted_return:
                             p_fill_r, p_fill_g, p_fill_b = 212, 237, 218 
                             p_txt_r, p_txt_g, p_txt_b = 21, 87, 36
@@ -484,7 +494,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.set_x(15)
                         box_w = 120
                         
-                        # Total Value Box
                         pdf.set_font("Arial", "B", 16)
                         pdf.set_fill_color(226, 227, 229)
                         pdf.set_text_color(56, 61, 65)
@@ -495,7 +504,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(box_w, 30, f"${total_value:,.0f}", border=1, align="C", fill=True)
                         pdf.ln(30)
                         
-                        # Portfolio Return Box
                         pdf.set_x(15)
                         pdf.set_font("Arial", "B", 16)
                         pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b)
@@ -507,7 +515,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(box_w, 35, f"{port_weighted_return:.2%}", border=1, align="C", fill=True)
                         pdf.ln(30)
                         
-                        # Benchmark Return Box
                         pdf.set_x(15)
                         pdf.set_font("Arial", "B", 16)
                         pdf.set_fill_color(b_fill_r, b_fill_g, b_fill_b)
@@ -525,12 +532,11 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     # --- PAGE 3: PERFORMANCE REPORT HOLDINGS ---
                     if inc_holdings and len(selected_pdf_cols) > 0:
                         pdf.add_page(orientation='L')
-                        pdf.set_font("Arial", "B", 22)
+                        pdf.set_font("Arial", "B", 26)
                         pdf.set_text_color(0, 0, 0)
                         pdf.cell(0, 15, "Performance Report", ln=True, align="L")
                         pdf.ln(5)
                         
-                        # Dynamic Width Adjustment (Fits exactly to 277mm)
                         base_widths = {
                             'Security Name': 65, 'Type': 22, 'Sector': 25, 'Ticker': 18, 'Bench': 18,
                             'Amount': 30, 'P. Date': 25, 'Asset Ret': 24, 
@@ -555,7 +561,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         fill_row = False 
                         for idx, row in calc_df.iterrows():
-                            # Zebra Striping Setup
                             if fill_row: pdf.set_fill_color(242, 248, 242) 
                             else: pdf.set_fill_color(255, 255, 255)
                                 
@@ -568,7 +573,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             line_height = 8
                             row_height = line_height * len(wrapped_lines)
                             
-                            # CRITICAL BOUNDARY FIX
                             if pdf.get_y() + row_height > 185:
                                 pdf.add_page(orientation='L')
                                 draw_table_headers()
@@ -577,14 +581,12 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             
                             y_start = pdf.get_y()
                             
-                            # Pass 1: Draw absolute perfect background rectangles for the entire row
                             x_curr = x_offset
                             for col in selected_pdf_cols:
                                 w = col_width_map[col]
                                 pdf.rect(x_curr, y_start, w, row_height, 'DF')
                                 x_curr += w
                                 
-                            # Pass 2: Draw the text precisely over the backgrounds
                             x_curr = x_offset
                             for col in selected_pdf_cols:
                                 w = col_width_map[col]
@@ -628,12 +630,11 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     # --- PAGE 4: BAR CHART ---
                     if inc_bar:
                         pdf.add_page(orientation='L')
-                        pdf.set_font("Arial", "B", 24)
-                        pdf.cell(0, 10, "Asset vs Benchmark Performance", ln=True, align="C")
+                        pdf.set_font("Arial", "B", 26)
+                        pdf.cell(0, 15, "Asset vs Benchmark Performance", ln=True, align="L")
                         pdf.ln(5)
                         try:
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_bar:
-                                # Giant Labels, Large Margins
                                 fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
                                                      color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
                                 fig_bar_pdf.update_layout(
@@ -643,7 +644,9 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                     font=dict(size=26), 
                                     xaxis=dict(title="", tickfont=dict(size=26)),
                                     yaxis=dict(title="", tickfont=dict(size=26)),
-                                    legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                                    legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                    paper_bgcolor='white',
+                                    plot_bgcolor='white'
                                 )
                                 fig_bar_pdf.write_image(f_bar.name, format="png", engine="kaleido", width=1400, height=650, scale=2)
                                 
@@ -653,72 +656,71 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             os.remove(f_bar.name)
                         except Exception as e:
                             pdf.set_font("Arial", "", 12)
-                            pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="C")
+                            pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
 
                     # --- PAGE 5: RISK METRICS & CORRELATION MATRIX ---
-                    if inc_risk or inc_corr:
+                    if inc_risk:
                         pdf.add_page(orientation='L')
                         
-                        if inc_risk:
-                            pdf.set_font("Arial", "B", 22)
-                            pdf.cell(0, 10, "Weighted Portfolio Risk Summary", ln=True, align="C")
-                            pdf.ln(5)
+                        pdf.set_font("Arial", "B", 26)
+                        pdf.cell(0, 15, "Risk & Correlation Analysis", ln=True, align="L")
+                        pdf.ln(5)
+                        
+                        # Shrunk by 10% to ensure fit
+                        r_box_w = 55
+                        spacing = 5
+                        total_r_w = (r_box_w * 4) + (spacing * 3)
+                        x_r_start = (297 - total_r_w) / 2
+                        
+                        m_data = [
+                            ("Weighted Alpha", f"{w_alpha:.4f}"),
+                            ("Weighted Beta", f"{w_beta:.2f}"),
+                            ("Weighted Sharpe", f"{w_sharpe:.2f}"),
+                            ("Weighted Std Dev", f"{w_stddev:.2%}")
+                        ]
+                        
+                        pdf.set_y(pdf.get_y())
+                        for title, val in m_data:
+                            pdf.set_x(x_r_start)
+                            pdf.set_fill_color(27, 79, 49)
+                            pdf.set_text_color(255, 255, 255)
+                            pdf.set_font("Arial", "B", 11) 
+                            pdf.cell(r_box_w, 10, title, border=1, align='C', fill=True)
                             
-                            # Elegant Pop Blocks for Risk Summary
-                            r_box_w = 60
-                            spacing = 5
-                            total_r_w = (r_box_w * 4) + (spacing * 3)
-                            x_r_start = (297 - total_r_w) / 2
+                            pdf.set_xy(x_r_start, pdf.get_y() + 10)
+                            pdf.set_fill_color(245, 247, 245)
+                            pdf.set_text_color(0, 0, 0)
+                            pdf.set_font("Arial", "B", 16)
+                            pdf.cell(r_box_w, 14, val, border=1, align='C', fill=True)
                             
-                            m_data = [
-                                ("Weighted Alpha", f"{w_alpha:.4f}"),
-                                ("Weighted Beta", f"{w_beta:.2f}"),
-                                ("Weighted Sharpe", f"{w_sharpe:.2f}"),
-                                ("Weighted Std Dev", f"{w_stddev:.2%}")
-                            ]
+                            x_r_start += r_box_w + spacing
+                            pdf.set_y(pdf.get_y() - 10) 
                             
-                            pdf.set_y(pdf.get_y())
-                            for title, val in m_data:
-                                pdf.set_x(x_r_start)
-                                pdf.set_fill_color(27, 79, 49)
-                                pdf.set_text_color(255, 255, 255)
-                                pdf.set_font("Arial", "B", 13)
-                                pdf.cell(r_box_w, 12, title, border=1, align='C', fill=True)
-                                
-                                pdf.set_xy(x_r_start, pdf.get_y() + 12)
-                                pdf.set_fill_color(245, 247, 245)
-                                pdf.set_text_color(0, 0, 0)
-                                pdf.set_font("Arial", "B", 18)
-                                pdf.cell(r_box_w, 16, val, border=1, align='C', fill=True)
-                                
-                                x_r_start += r_box_w + spacing
-                                pdf.set_y(pdf.get_y() - 12) 
-                                
-                            pdf.ln(35)
+                        pdf.ln(28) # Shrunk padding to merge seamlessly 
 
-                        if inc_corr and fig_corr is not None:
-                            pdf.set_font("Arial", "B", 22)
-                            pdf.cell(0, 10, "Position Correlation Matrix", ln=True, align="C")
-                            pdf.ln(5)
+                        if fig_corr is not None:
                             try:
                                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr:
                                     fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
                                                              zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                    # Angled labels, shifted margins for professional look
+                                    # Force white background, size 14 labels (prevents cell text overlap), angle labels
                                     fig_corr_pdf.update_layout(
-                                        margin=dict(l=80, r=20, t=20, b=80), 
-                                        font=dict(size=22),
-                                        xaxis_tickangle=-45
+                                        margin=dict(l=60, r=20, t=10, b=60), 
+                                        font=dict(size=14),
+                                        xaxis_tickangle=-45,
+                                        paper_bgcolor='white',
+                                        plot_bgcolor='white'
                                     )
-                                    fig_corr_pdf.write_image(f_corr.name, format="png", engine="kaleido", width=1200, height=750, scale=2)
+                                    fig_corr_pdf.write_image(f_corr.name, format="png", engine="kaleido", width=1000, height=500, scale=2)
                                     
                                     img_w = 200
                                     x_pos = (297 - img_w) / 2
-                                    pdf.image(f_corr.name, x=x_pos, w=img_w)
+                                    current_y = pdf.get_y()
+                                    pdf.image(f_corr.name, x=x_pos, y=current_y, w=img_w)
                                 os.remove(f_corr.name)
                             except Exception as e:
                                 pdf.set_font("Arial", "", 12)
-                                pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="C")
+                                pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
 
                     if logo_path and os.path.exists(logo_path):
                         os.remove(logo_path)
