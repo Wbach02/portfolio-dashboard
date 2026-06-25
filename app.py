@@ -363,7 +363,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         col_metrics, col_matrix = st.columns([1, 2])
         
         with col_metrics:
-            st.markdown("**Weighted Portfolio Risk Metrics**")
+            st.markdown("**Risk Summary**")
             w_alpha = (calc_df['Alpha'] * weights).sum()
             w_beta = (calc_df['Beta'] * weights).sum()
             w_sharpe = (calc_df['Sharpe'] * weights).sum()
@@ -416,7 +416,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             inc_summary = st.checkbox("Portfolio Summary & Sector Pie", value=True)
             inc_holdings = st.checkbox("Performance Report Table", value=True)
             inc_bar = st.checkbox("Asset vs Benchmark Bar Chart", value=True)
-            inc_risk = st.checkbox("Risk & Correlation Analysis", value=True)
+            inc_risk = st.checkbox("Risk Summary & Correlation Matrix", value=True)
+            inc_corr = inc_risk # Ensures the correlation logic functions without error
             
         if st.button("Generate PDF", type="primary"):
             if not client_name:
@@ -689,7 +690,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         if inc_risk:
                             pdf.set_font("Arial", "B", 22) # Font shrunk 10% from 26
-                            pdf.cell(0, 10, "Risk & Correlation Analysis", ln=True, align="L")
+                            pdf.cell(0, 10, "Risk Summary", ln=True, align="L")
                             pdf.ln(5)
                             
                             # Boxes Shrunk by 10% to ensure large matrix space
@@ -728,7 +729,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         if inc_corr and fig_corr is not None:
                             try:
                                 fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
-                                                         zmin=-1, zmax=1, aspect="auto")
+                                                         zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
                                 # Size 12 fonts, massive margins, rotated 45deg labels to prevent ALL overlap
                                 fig_corr_pdf.update_layout(
                                     margin=dict(l=100, r=20, t=10, b=100), 
