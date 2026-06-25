@@ -245,13 +245,13 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
-        # DYNAMIC HIGHLIGHT LOGIC FOR THE DASHBOARD
+        # DYNAMIC HIGHLIGHT LOGIC FOR THE DASHBOARD (Opposing Colors)
         if port_weighted_return >= bench_weighted_return:
-            bg_color = "#d4edda" # Bright Pastel Green
-            text_color = "#155724" # Dark Green
+            port_bg, port_txt = "#d4edda", "#155724" # Green
+            bench_bg, bench_txt = "#f8d7da", "#721c24" # Red
         else:
-            bg_color = "#f8d7da" # Bright Pastel Red
-            text_color = "#721c24" # Dark Red
+            port_bg, port_txt = "#f8d7da", "#721c24" # Red
+            bench_bg, bench_txt = "#d4edda", "#155724" # Green
 
         c1, c2, c3 = st.columns(3)
         c1.markdown(f"""
@@ -262,16 +262,16 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         """, unsafe_allow_html=True)
 
         c2.markdown(f"""
-        <div style="background-color: {bg_color}; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid {text_color};">
-            <p style="margin: 0; font-size: 1.2em; color: {text_color}; font-weight: bold;">Weighted Portfolio Return</p>
-            <h1 style="margin: 0; font-size: 3em; font-weight: bold; color: {text_color};">{port_weighted_return:.2%}</h1>
+        <div style="background-color: {port_bg}; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid {port_txt};">
+            <p style="margin: 0; font-size: 1.2em; color: {port_txt}; font-weight: bold;">Weighted Portfolio Return</p>
+            <h1 style="margin: 0; font-size: 3em; font-weight: bold; color: {port_txt};">{port_weighted_return:.2%}</h1>
         </div>
         """, unsafe_allow_html=True)
 
         c3.markdown(f"""
-        <div style="background-color: #f1f3f5; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid #dee2e6;">
-            <p style="margin: 0; font-size: 1.2em; color: #495057;">Weighted Benchmark Return</p>
-            <h1 style="margin: 0; font-size: 2.5em; font-weight: bold; color: #212529;">{bench_weighted_return:.2%}</h1>
+        <div style="background-color: {bench_bg}; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid {bench_txt};">
+            <p style="margin: 0; font-size: 1.2em; color: {bench_txt}; font-weight: bold;">Weighted Benchmark Return</p>
+            <h1 style="margin: 0; font-size: 3em; font-weight: bold; color: {bench_txt};">{bench_weighted_return:.2%}</h1>
         </div>
         """, unsafe_allow_html=True)
         
@@ -279,9 +279,18 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         st.markdown("**Asset vs Benchmark Performance**")
         chart_df = calc_df[['Ticker', 'Ticker Return', 'Benchmark Return']].copy()
         chart_melt = chart_df.melt(id_vars='Ticker', var_name='Metric', value_name='Return')
+        
+        # Plotly updates: Larger fonts and optimized margins
         fig_bar = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
                          color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
-        fig_bar.update_layout(yaxis_tickformat='.2%', margin=dict(l=60, r=20, t=40, b=80), legend_title_text='')
+        fig_bar.update_layout(
+            yaxis_tickformat='.2%', 
+            margin=dict(l=40, r=20, t=20, b=40), 
+            legend_title_text='',
+            font=dict(size=16),
+            xaxis=dict(title=""),
+            yaxis=dict(title="")
+        )
         st.plotly_chart(fig_bar, use_container_width=True)
         
         st.divider()
@@ -316,7 +325,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
                                              zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                        fig_corr.update_layout(margin=dict(l=60, r=20, t=40, b=80))
+                        fig_corr.update_layout(margin=dict(l=40, r=20, t=20, b=40), font=dict(size=14))
                         st.plotly_chart(fig_corr, use_container_width=True)
                     else:
                         st.info("Add more than one position to generate a correlation matrix.")
@@ -389,10 +398,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(0, 15, "Performance Report", ln=True, align="C")
                         pdf.ln(5)
                         
-                        pdf.set_fill_color(27, 79, 49) # Elegant Forest Green
-                        pdf.set_text_color(255, 255, 255)
-                        pdf.set_font("Arial", "B", 15) # 20% larger header font
-                        
                         # Dynamically calculate total width to perfect center
                         col_width_map = {
                             'Security Name': 70, 'Type': 25, 'Ticker': 20, 'Bench': 20,
@@ -403,14 +408,19 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         total_table_width = sum([col_width_map[c] for c in selected_pdf_cols])
                         x_offset = (297 - total_table_width) / 2
                         
-                        # Print Headers
-                        pdf.set_x(x_offset)
-                        for col in selected_pdf_cols:
-                            pdf.cell(col_width_map[col], 12, col, border=1, align='C', fill=True)
-                        pdf.ln()
-                        
-                        pdf.set_text_color(0, 0, 0)
-                        pdf.set_font("Arial", "", 14) # 20% larger data font
+                        # Function to easily redraw headers upon page break
+                        def draw_table_headers():
+                            pdf.set_fill_color(27, 79, 49) # Elegant Forest Green
+                            pdf.set_text_color(255, 255, 255)
+                            pdf.set_font("Arial", "B", 15)
+                            pdf.set_x(x_offset)
+                            for col in selected_pdf_cols:
+                                pdf.cell(col_width_map[col], 12, col, border=1, align='C', fill=True)
+                            pdf.ln()
+                            pdf.set_text_color(0, 0, 0)
+                            pdf.set_font("Arial", "", 14)
+
+                        draw_table_headers()
                         
                         fill_row = False 
                         for idx, row in calc_df.iterrows():
@@ -422,15 +432,18 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             sec_name = str(row.get('Security Name', row['Ticker']))
                             
                             # Flawless Text Wrapping
-                            wrapped_lines = textwrap.wrap(sec_name, width=28)
+                            wrapped_lines = textwrap.wrap(sec_name, width=28, break_long_words=True)
                             if len(wrapped_lines) == 0: wrapped_lines = [""]
                             
                             line_height = 9
                             row_height = line_height * len(wrapped_lines)
                             
-                            # Boundary check - Prevents overlapping/broken bottom rows!
-                            if pdf.get_y() + row_height > 190:
+                            # CRITICAL FIX: Ensure entire row fits, otherwise start new page and redraw headers!
+                            if pdf.get_y() + row_height > 180:
                                 pdf.add_page(orientation='L')
+                                draw_table_headers()
+                                if fill_row: pdf.set_fill_color(242, 248, 242) 
+                                else: pdf.set_fill_color(255, 255, 255)
                             
                             pdf.set_x(x_offset)
                             x_start = pdf.get_x()
@@ -442,8 +455,9 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                 y_curr = pdf.get_y()
                                 
                                 if col == 'Security Name':
+                                    # multi_cell naturally advances Y, so we must reset it for horizontal inline cells
                                     pdf.multi_cell(w, line_height, '\n'.join(wrapped_lines), border=1, align='C', fill=True)
-                                    pdf.set_xy(x_curr + w, y_start) # Hard reset coordinate to align row heights perfectly
+                                    pdf.set_xy(x_curr + w, y_start)
                                 elif col == 'Type':
                                     pdf.cell(w, row_height, str(row.get('Type', '')), border=1, align='C', fill=True)
                                 elif col == 'Ticker':
@@ -481,13 +495,17 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(0, 10, "Portfolio Summary", ln=True, align="C")
                         pdf.ln(5)
                         
-                        # Dynamic POP Logic for PDF Colors
+                        # Dynamic POP Logic for PDF Colors (Opposing Bench/Port Colors)
                         if port_weighted_return >= bench_weighted_return:
-                            fill_r, fill_g, fill_b = 212, 237, 218 # Bright Light Green
-                            text_r, text_g, text_b = 21, 87, 36    # Dark Green
+                            p_fill_r, p_fill_g, p_fill_b = 212, 237, 218 # Green
+                            p_txt_r, p_txt_g, p_txt_b = 21, 87, 36
+                            b_fill_r, b_fill_g, b_fill_b = 248, 215, 218 # Red
+                            b_txt_r, b_txt_g, b_txt_b = 114, 28, 36
                         else:
-                            fill_r, fill_g, fill_b = 248, 215, 218 # Bright Light Red
-                            text_r, text_g, text_b = 114, 28, 36   # Dark Red
+                            p_fill_r, p_fill_g, p_fill_b = 248, 215, 218 # Red
+                            p_txt_r, p_txt_g, p_txt_b = 114, 28, 36
+                            b_fill_r, b_fill_g, b_fill_b = 212, 237, 218 # Green
+                            b_txt_r, b_txt_g, b_txt_b = 21, 87, 36
                         
                         box_w = 85
                         total_summary_w = box_w * 3
@@ -496,47 +514,61 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         # Header Row for Summary
                         pdf.set_x(x_offset_sum)
                         pdf.set_font("Arial", "B", 12)
+                        
                         pdf.set_fill_color(226, 227, 229)
                         pdf.set_text_color(56, 61, 65)
                         pdf.cell(box_w, 10, "Total Portfolio Value", border=1, align="C", fill=True)
                         
-                        pdf.set_fill_color(fill_r, fill_g, fill_b)
-                        pdf.set_text_color(text_r, text_g, text_b)
+                        pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b)
+                        pdf.set_text_color(p_txt_r, p_txt_g, p_txt_b)
                         pdf.cell(box_w, 10, "Weighted Portfolio Return", border=1, align="C", fill=True)
                         
-                        pdf.set_fill_color(226, 227, 229)
-                        pdf.set_text_color(56, 61, 65)
+                        pdf.set_fill_color(b_fill_r, b_fill_g, b_fill_b)
+                        pdf.set_text_color(b_txt_r, b_txt_g, b_txt_b)
                         pdf.cell(box_w, 10, "Weighted Benchmark Return", border=1, align="C", fill=True)
                         pdf.ln(10)
                         
                         # Value Row for Summary (Double size font, bright colors)
                         pdf.set_x(x_offset_sum)
                         pdf.set_font("Arial", "B", 26)
+                        
                         pdf.set_fill_color(226, 227, 229)
                         pdf.set_text_color(56, 61, 65)
                         pdf.cell(box_w, 20, f"${total_value:,.0f}", border=1, align="C", fill=True)
                         
-                        pdf.set_fill_color(fill_r, fill_g, fill_b)
-                        pdf.set_text_color(text_r, text_g, text_b)
+                        pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b)
+                        pdf.set_text_color(p_txt_r, p_txt_g, p_txt_b)
                         pdf.cell(box_w, 20, f"{port_weighted_return:.2%}", border=1, align="C", fill=True)
                         
-                        pdf.set_fill_color(226, 227, 229)
-                        pdf.set_text_color(56, 61, 65)
+                        pdf.set_fill_color(b_fill_r, b_fill_g, b_fill_b)
+                        pdf.set_text_color(b_txt_r, b_txt_g, b_txt_b)
                         pdf.cell(box_w, 20, f"{bench_weighted_return:.2%}", border=1, align="C", fill=True)
                         pdf.ln(25)
 
                     # --- PAGE 3: BAR CHART ---
                     if inc_bar:
                         pdf.add_page(orientation='L')
-                        pdf.set_font("Arial", "B", 18)
-                        pdf.cell(0, 15, "Asset vs Benchmark Performance", ln=True, align="C")
-                        pdf.ln(10)
+                        pdf.set_font("Arial", "B", 20)
+                        pdf.cell(0, 10, "Asset vs Benchmark Performance", ln=True, align="C")
+                        pdf.ln(5)
                         try:
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_bar:
-                                fig_bar.write_image(f_bar.name, format="png", engine="kaleido", width=1200, height=550, scale=2)
+                                # Create a specialized PDF version of the chart to enforce huge labels
+                                fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
+                                                     color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
+                                fig_bar_pdf.update_layout(
+                                    yaxis_tickformat='.2%', 
+                                    margin=dict(l=40, r=20, t=20, b=40), 
+                                    legend_title_text='',
+                                    font=dict(size=24), # 150% larger for PDF
+                                    xaxis=dict(title="", tickfont=dict(size=24)),
+                                    yaxis=dict(title="", tickfont=dict(size=24)),
+                                    legend=dict(font=dict(size=24), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                                )
+                                fig_bar_pdf.write_image(f_bar.name, format="png", engine="kaleido", width=1400, height=650, scale=2)
                                 
-                                img_w = 260
-                                x_pos = (297 - img_w) / 2
+                                img_w = 277 # Max width (297 width - 10 left margin - 10 right margin)
+                                x_pos = 10
                                 pdf.image(f_bar.name, x=x_pos, w=img_w)
                             os.remove(f_bar.name)
                         except Exception as e:
@@ -549,7 +581,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         if inc_risk:
                             pdf.set_font("Arial", "B", 18)
-                            pdf.cell(0, 15, "Weighted Portfolio Risk Summary", ln=True, align="C")
+                            pdf.cell(0, 10, "Weighted Portfolio Risk Summary", ln=True, align="C")
+                            pdf.ln(5)
                             
                             pdf.set_fill_color(27, 79, 49)
                             pdf.set_text_color(255, 255, 255)
@@ -558,7 +591,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             m_widths = [50, 50, 50, 50]
                             m_headers = ['Weighted Alpha', 'Weighted Beta', 'Weighted Sharpe', 'Weighted Std Dev']
                             
-                            pdf.set_x(48.5)
+                            pdf.set_x(48.5) # Center (297 - 200)/2
                             for i in range(len(m_headers)):
                                 pdf.cell(m_widths[i], 12, m_headers[i], border=1, align='C', fill=True)
                             pdf.ln()
@@ -571,7 +604,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             pdf.cell(m_widths[1], 12, f"{w_beta:.2f}", border=1, align='C', fill=True)
                             pdf.cell(m_widths[2], 12, f"{w_sharpe:.2f}", border=1, align='C', fill=True)
                             pdf.cell(m_widths[3], 12, f"{w_stddev:.2%}", border=1, align='C', fill=True)
-                            pdf.ln(30) 
+                            pdf.ln(10) # Tiny gap so they fit tightly on the same page
 
                         if inc_corr and fig_corr is not None:
                             pdf.set_font("Arial", "B", 18)
@@ -579,7 +612,10 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             pdf.ln(5)
                             try:
                                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr:
-                                    fig_corr.write_image(f_corr.name, format="png", engine="kaleido", width=1000, height=550, scale=2)
+                                    fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
+                                                             zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
+                                    fig_corr_pdf.update_layout(margin=dict(l=40, r=20, t=20, b=40), font=dict(size=18))
+                                    fig_corr_pdf.write_image(f_corr.name, format="png", engine="kaleido", width=1000, height=450, scale=2)
                                     
                                     img_w = 200
                                     x_pos = (297 - img_w) / 2
