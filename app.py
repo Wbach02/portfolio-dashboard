@@ -53,9 +53,9 @@ def fetch_security_details(ticker):
         return ticker, 'Unknown'
 
 def fetch_risk_metrics(ticker, benchmark, start_date):
-    """Fetches historical data to calculate Total Return and Risk Metrics using strict Adj Close."""
+    """Fetches historical data to calculate True Total Return using Adj Close."""
     try:
-        # Bypassing auto_adjust=True bugs by explicitly fetching the 'Adj Close' column
+        # STRICT ADJ CLOSE FETCH: Accounts for all splits and dividends mathematically.
         raw_data = yf.download([ticker, benchmark], start=start_date, progress=False, auto_adjust=False)
         
         if 'Adj Close' in raw_data:
@@ -220,7 +220,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
     
     if not calc_df.empty:
         
-        display_cols = ["Security Name", "Type", "Ticker", "Amount", "Purchase Date", "Benchmark", "Ticker Return", "Benchmark Return", "Difference"]
+        display_cols = ["Security Name", "Type", "Ticker", "Benchmark", "Amount", "Purchase Date", "Ticker Return", "Benchmark Return", "Difference"]
         table_df = calc_df[display_cols].copy()
         table_df['Purchase Date'] = pd.to_datetime(table_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
         
@@ -245,11 +245,37 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Portfolio Value", f"${total_value:,.2f}")
-        m2.metric("Weighted Portfolio Return", f"{port_weighted_return:.2%}", delta=f"{weighted_diff:.2%} vs Benchmark")
-        m3.metric("Weighted Benchmark Return", f"{bench_weighted_return:.2%}")
+        # DYNAMIC HIGHLIGHT LOGIC FOR THE DASHBOARD
+        if port_weighted_return >= bench_weighted_return:
+            bg_color = "#d4edda" # Bright Pastel Green
+            text_color = "#155724" # Dark Green
+        else:
+            bg_color = "#f8d7da" # Bright Pastel Red
+            text_color = "#721c24" # Dark Red
 
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(f"""
+        <div style="background-color: #f1f3f5; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid #dee2e6;">
+            <p style="margin: 0; font-size: 1.2em; color: #495057;">Total Portfolio Value</p>
+            <h1 style="margin: 0; font-size: 2.5em; font-weight: bold; color: #212529;">${total_value:,.2f}</h1>
+        </div>
+        """, unsafe_allow_html=True)
+
+        c2.markdown(f"""
+        <div style="background-color: {bg_color}; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid {text_color};">
+            <p style="margin: 0; font-size: 1.2em; color: {text_color}; font-weight: bold;">Weighted Portfolio Return</p>
+            <h1 style="margin: 0; font-size: 3em; font-weight: bold; color: {text_color};">{port_weighted_return:.2%}</h1>
+        </div>
+        """, unsafe_allow_html=True)
+
+        c3.markdown(f"""
+        <div style="background-color: #f1f3f5; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid #dee2e6;">
+            <p style="margin: 0; font-size: 1.2em; color: #495057;">Weighted Benchmark Return</p>
+            <h1 style="margin: 0; font-size: 2.5em; font-weight: bold; color: #212529;">{bench_weighted_return:.2%}</h1>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.write("")
         st.markdown("**Asset vs Benchmark Performance**")
         chart_df = calc_df[['Ticker', 'Ticker Return', 'Benchmark Return']].copy()
         chart_melt = chart_df.melt(id_vars='Ticker', var_name='Metric', value_name='Return')
@@ -282,7 +308,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                 min_date = st.session_state.portfolio['Purchase Date'].min().strftime('%Y-%m-%d')
                 try:
                     if len(unique_tickers) > 1:
-                        # Fetch Adj Close for correlation matrix as well
                         raw_data = yf.download(unique_tickers, start=min_date, progress=False, auto_adjust=False)
                         all_data = raw_data['Adj Close'] if 'Adj Close' in raw_data else raw_data['Close']
                         
@@ -308,8 +333,10 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             logo_upload = st.file_uploader("Upload Company Logo", type=['png', 'jpg', 'jpeg'])
             
             st.markdown("**Select Columns for Holdings Table:**")
-            available_cols = ['Security Name', 'Type', 'Ticker', 'Amount', 'P. Date', 'Asset Ret', 'Bench Ret', 'Difference']
-            selected_pdf_cols = st.multiselect("Columns to include:", available_cols, default=available_cols)
+            # Added "Bench" to default columns
+            available_cols = ['Security Name', 'Type', 'Ticker', 'Bench', 'Amount', 'P. Date', 'Asset Ret', 'Bench Ret', 'Difference']
+            default_cols = ['Security Name', 'Ticker', 'Bench', 'Amount', 'P. Date', 'Asset Ret', 'Bench Ret', 'Difference']
+            selected_pdf_cols = st.multiselect("Columns to include:", available_cols, default=default_cols)
             
         with col_pdf_2:
             st.markdown("**Select Sections to Include:**")
@@ -325,21 +352,21 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             else:
                 with st.spinner("Building Landscape PDF..."):
                     pdf = FPDF(orientation='L', unit='mm', format='A4')
+                    pdf.set_margins(10, 10, 10) # Reduced margins for larger charts/tables
+                    pdf.set_draw_color(200, 200, 200) # Light gray borders
                     
                     # --- PAGE 1: DEDICATED COVER PAGE ---
                     pdf.add_page()
-                    
-                    pdf.ln(40) # Push content down for aesthetic centering
-                    pdf.set_font("Arial", "B", 26)
+                    pdf.ln(50) 
+                    pdf.set_font("Arial", "B", 36)
                     pdf.cell(0, 15, "Portfolio Performance Report", ln=True, align="C")
                     
-                    pdf.ln(10)
-                    pdf.set_font("Arial", "", 16)
+                    pdf.ln(15)
+                    pdf.set_font("Arial", "", 20)
                     pdf.cell(0, 10, f"Prepared for: {client_name}", ln=True, align="C")
                     pdf.cell(0, 10, f"Date: {datetime.datetime.now().strftime('%B %d, %Y')}", ln=True, align="C")
                     
-                    pdf.ln(30)
-                    
+                    pdf.ln(35)
                     if logo_upload is not None:
                         try:
                             img = Image.open(logo_upload).convert("RGB")
@@ -347,8 +374,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                 img.save(tmp_file.name, format="JPEG")
                                 logo_path = tmp_file.name
                             
-                            # Center the logo mathematically
-                            img_w = 60
+                            # Logo size increased 50% (from 70 to 105)
+                            img_w = 105
                             x_pos = (297 - img_w) / 2
                             pdf.image(logo_path, x=x_pos, w=img_w)
                             os.remove(logo_path)
@@ -358,48 +385,54 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     # --- PAGE 2: PERFORMANCE REPORT & SUMMARY ---
                     if inc_holdings and len(selected_pdf_cols) > 0:
                         pdf.add_page(orientation='L')
-                        pdf.set_font("Arial", "B", 18)
+                        pdf.set_font("Arial", "B", 20)
                         pdf.cell(0, 15, "Performance Report", ln=True, align="C")
                         pdf.ln(5)
                         
-                        # Headers
-                        pdf.set_fill_color(19, 98, 7) # Dark Green Background
+                        pdf.set_fill_color(27, 79, 49) # Elegant Forest Green
                         pdf.set_text_color(255, 255, 255)
-                        pdf.set_font("Arial", "B", 13) 
+                        pdf.set_font("Arial", "B", 15) # 20% larger header font
                         
+                        # Dynamically calculate total width to perfect center
                         col_width_map = {
-                            'Security Name': 70, 'Type': 26, 'Ticker': 22, 
-                            'Amount': 33, 'P. Date': 27, 'Asset Ret': 28, 
-                            'Bench Ret': 28, 'Difference': 33
+                            'Security Name': 70, 'Type': 25, 'Ticker': 20, 'Bench': 20,
+                            'Amount': 35, 'P. Date': 28, 'Asset Ret': 28, 
+                            'Bench Ret': 28, 'Difference': 28
                         }
                         
+                        total_table_width = sum([col_width_map[c] for c in selected_pdf_cols])
+                        x_offset = (297 - total_table_width) / 2
+                        
+                        # Print Headers
+                        pdf.set_x(x_offset)
                         for col in selected_pdf_cols:
-                            pdf.cell(col_width_map[col], 10, col, border=1, align='C', fill=True)
+                            pdf.cell(col_width_map[col], 12, col, border=1, align='C', fill=True)
                         pdf.ln()
                         
-                        # Row Data with Zebra Striping and MultiCell Alignment Fix
                         pdf.set_text_color(0, 0, 0)
-                        pdf.set_font("Arial", "", 12) 
+                        pdf.set_font("Arial", "", 14) # 20% larger data font
                         
-                        fill_row = False # Toggle for zebra striping
+                        fill_row = False 
                         for idx, row in calc_df.iterrows():
-                            # Set zebra stripe colors
-                            if fill_row:
-                                pdf.set_fill_color(242, 248, 242) # Very light green/gray
-                            else:
-                                pdf.set_fill_color(255, 255, 255) # White
+                            # Zebra Striping
+                            if fill_row: pdf.set_fill_color(242, 248, 242) 
+                            else: pdf.set_fill_color(255, 255, 255)
                                 
                             date_str = row['Purchase Date'].strftime('%m/%d/%Y') if hasattr(row['Purchase Date'], 'strftime') else str(row['Purchase Date']).split(' ')[0]
                             sec_name = str(row.get('Security Name', row['Ticker']))
                             
-                            wrapped_name = textwrap.fill(sec_name, width=28, break_long_words=True)
-                            lines = wrapped_name.count('\n') + 1
-                            line_height = 8
-                            row_height = line_height * lines
+                            # Flawless Text Wrapping
+                            wrapped_lines = textwrap.wrap(sec_name, width=28)
+                            if len(wrapped_lines) == 0: wrapped_lines = [""]
                             
-                            if pdf.get_y() + row_height > 180:
+                            line_height = 9
+                            row_height = line_height * len(wrapped_lines)
+                            
+                            # Boundary check - Prevents overlapping/broken bottom rows!
+                            if pdf.get_y() + row_height > 190:
                                 pdf.add_page(orientation='L')
                             
+                            pdf.set_x(x_offset)
                             x_start = pdf.get_x()
                             y_start = pdf.get_y()
                             
@@ -409,14 +442,16 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                 y_curr = pdf.get_y()
                                 
                                 if col == 'Security Name':
-                                    pdf.multi_cell(w, line_height, wrapped_name, border=1, align='C', fill=True)
-                                    pdf.set_xy(x_curr + w, y_start) # Manually reset X/Y for the next cell inline
+                                    pdf.multi_cell(w, line_height, '\n'.join(wrapped_lines), border=1, align='C', fill=True)
+                                    pdf.set_xy(x_curr + w, y_start) # Hard reset coordinate to align row heights perfectly
                                 elif col == 'Type':
                                     pdf.cell(w, row_height, str(row.get('Type', '')), border=1, align='C', fill=True)
                                 elif col == 'Ticker':
-                                    pdf.set_font("Arial", "B", 12)
+                                    pdf.set_font("Arial", "B", 14)
                                     pdf.cell(w, row_height, str(row['Ticker']), border=1, align='C', fill=True)
-                                    pdf.set_font("Arial", "", 12)
+                                    pdf.set_font("Arial", "", 14)
+                                elif col == 'Bench':
+                                    pdf.cell(w, row_height, str(row['Benchmark']), border=1, align='C', fill=True)
                                 elif col == 'Amount':
                                     pdf.cell(w, row_height, f"${row['Amount']:,.2f}", border=1, align='R', fill=True)
                                 elif col == 'P. Date':
@@ -427,47 +462,80 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                     pdf.cell(w, row_height, f"{row['Benchmark Return']:.2%}", border=1, align='R', fill=True)
                                 elif col == 'Difference':
                                     diff = row['Difference']
-                                    pdf.set_font("Arial", "B", 12)
+                                    pdf.set_font("Arial", "B", 14)
                                     if diff > 0.02: pdf.set_text_color(44, 160, 44) 
                                     elif diff < -0.02: pdf.set_text_color(214, 39, 40)
                                     else: pdf.set_text_color(127, 127, 127) 
                                     pdf.cell(w, row_height, f"{diff:.2%}", border=1, align='R', fill=True)
                                     pdf.set_text_color(0, 0, 0)
-                                    pdf.set_font("Arial", "", 12)
+                                    pdf.set_font("Arial", "", 14)
                             
                             pdf.set_y(y_start + row_height)
-                            fill_row = not fill_row # Alternate zebra striping
+                            fill_row = not fill_row 
 
                         pdf.ln(15)
 
                     # --- PORTFOLIO SUMMARY (Beneath Holdings) ---
                     if inc_summary:
-                        pdf.set_font("Arial", "B", 16)
+                        pdf.set_font("Arial", "B", 20)
                         pdf.cell(0, 10, "Portfolio Summary", ln=True, align="C")
-                        pdf.ln(2)
+                        pdf.ln(5)
                         
-                        pdf.set_fill_color(240, 240, 240) # Soft gray shading
-                        pdf.set_font("Arial", "", 12)
+                        # Dynamic POP Logic for PDF Colors
+                        if port_weighted_return >= bench_weighted_return:
+                            fill_r, fill_g, fill_b = 212, 237, 218 # Bright Light Green
+                            text_r, text_g, text_b = 21, 87, 36    # Dark Green
+                        else:
+                            fill_r, fill_g, fill_b = 248, 215, 218 # Bright Light Red
+                            text_r, text_g, text_b = 114, 28, 36   # Dark Red
                         
-                        # Calculate center spacing for 3 cells
-                        cell_w = 89
+                        box_w = 85
+                        total_summary_w = box_w * 3
+                        x_offset_sum = (297 - total_summary_w) / 2
                         
-                        pdf.cell(cell_w, 12, f"Total Portfolio Value: ${total_value:,.2f}", border=1, align="C", fill=True)
-                        pdf.cell(cell_w, 12, f"Weighted Portfolio Return: {port_weighted_return:.2%}", border=1, align="C", fill=True)
-                        pdf.cell(cell_w, 12, f"Weighted Benchmark Return: {bench_weighted_return:.2%}", border=1, align="C", fill=True)
-                        pdf.ln(15)
+                        # Header Row for Summary
+                        pdf.set_x(x_offset_sum)
+                        pdf.set_font("Arial", "B", 12)
+                        pdf.set_fill_color(226, 227, 229)
+                        pdf.set_text_color(56, 61, 65)
+                        pdf.cell(box_w, 10, "Total Portfolio Value", border=1, align="C", fill=True)
+                        
+                        pdf.set_fill_color(fill_r, fill_g, fill_b)
+                        pdf.set_text_color(text_r, text_g, text_b)
+                        pdf.cell(box_w, 10, "Weighted Portfolio Return", border=1, align="C", fill=True)
+                        
+                        pdf.set_fill_color(226, 227, 229)
+                        pdf.set_text_color(56, 61, 65)
+                        pdf.cell(box_w, 10, "Weighted Benchmark Return", border=1, align="C", fill=True)
+                        pdf.ln(10)
+                        
+                        # Value Row for Summary (Double size font, bright colors)
+                        pdf.set_x(x_offset_sum)
+                        pdf.set_font("Arial", "B", 26)
+                        pdf.set_fill_color(226, 227, 229)
+                        pdf.set_text_color(56, 61, 65)
+                        pdf.cell(box_w, 20, f"${total_value:,.0f}", border=1, align="C", fill=True)
+                        
+                        pdf.set_fill_color(fill_r, fill_g, fill_b)
+                        pdf.set_text_color(text_r, text_g, text_b)
+                        pdf.cell(box_w, 20, f"{port_weighted_return:.2%}", border=1, align="C", fill=True)
+                        
+                        pdf.set_fill_color(226, 227, 229)
+                        pdf.set_text_color(56, 61, 65)
+                        pdf.cell(box_w, 20, f"{bench_weighted_return:.2%}", border=1, align="C", fill=True)
+                        pdf.ln(25)
 
                     # --- PAGE 3: BAR CHART ---
                     if inc_bar:
                         pdf.add_page(orientation='L')
-                        pdf.set_font("Arial", "B", 16)
+                        pdf.set_font("Arial", "B", 18)
                         pdf.cell(0, 15, "Asset vs Benchmark Performance", ln=True, align="C")
-                        pdf.ln(5)
+                        pdf.ln(10)
                         try:
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_bar:
-                                fig_bar.write_image(f_bar.name, format="png", engine="kaleido", width=1100, height=500, scale=2)
+                                fig_bar.write_image(f_bar.name, format="png", engine="kaleido", width=1200, height=550, scale=2)
                                 
-                                img_w = 250
+                                img_w = 260
                                 x_pos = (297 - img_w) / 2
                                 pdf.image(f_bar.name, x=x_pos, w=img_w)
                             os.remove(f_bar.name)
@@ -480,17 +548,16 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.add_page(orientation='L')
                         
                         if inc_risk:
-                            pdf.set_font("Arial", "B", 16)
+                            pdf.set_font("Arial", "B", 18)
                             pdf.cell(0, 15, "Weighted Portfolio Risk Summary", ln=True, align="C")
                             
-                            pdf.set_fill_color(19, 98, 7)
+                            pdf.set_fill_color(27, 79, 49)
                             pdf.set_text_color(255, 255, 255)
-                            pdf.set_font("Arial", "B", 13)
+                            pdf.set_font("Arial", "B", 14)
                             
                             m_widths = [50, 50, 50, 50]
                             m_headers = ['Weighted Alpha', 'Weighted Beta', 'Weighted Sharpe', 'Weighted Std Dev']
                             
-                            # Center the Risk Table (297 width - 200 table width) / 2 = 48.5
                             pdf.set_x(48.5)
                             for i in range(len(m_headers)):
                                 pdf.cell(m_widths[i], 12, m_headers[i], border=1, align='C', fill=True)
@@ -498,23 +565,23 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             
                             pdf.set_x(48.5)
                             pdf.set_text_color(0, 0, 0)
-                            pdf.set_fill_color(245, 245, 245)
-                            pdf.set_font("Arial", "", 12)
+                            pdf.set_fill_color(245, 247, 245)
+                            pdf.set_font("Arial", "", 14)
                             pdf.cell(m_widths[0], 12, f"{w_alpha:.4f}", border=1, align='C', fill=True)
                             pdf.cell(m_widths[1], 12, f"{w_beta:.2f}", border=1, align='C', fill=True)
                             pdf.cell(m_widths[2], 12, f"{w_sharpe:.2f}", border=1, align='C', fill=True)
                             pdf.cell(m_widths[3], 12, f"{w_stddev:.2%}", border=1, align='C', fill=True)
-                            pdf.ln(25) # Padding before Correlation Matrix
+                            pdf.ln(30) 
 
                         if inc_corr and fig_corr is not None:
-                            pdf.set_font("Arial", "B", 16)
+                            pdf.set_font("Arial", "B", 18)
                             pdf.cell(0, 10, "Position Correlation Matrix", ln=True, align="C")
                             pdf.ln(5)
                             try:
                                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr:
                                     fig_corr.write_image(f_corr.name, format="png", engine="kaleido", width=1000, height=550, scale=2)
                                     
-                                    img_w = 190
+                                    img_w = 200
                                     x_pos = (297 - img_w) / 2
                                     pdf.image(f_corr.name, x=x_pos, w=img_w)
                                 os.remove(f_corr.name)
@@ -522,7 +589,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                 pdf.set_font("Arial", "", 12)
                                 pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="C")
 
-                    # Output PDF
                     pdf_output = pdf.output(dest='S')
                     pdf_bytes = pdf_output.encode('latin-1') if isinstance(pdf_output, str) else bytes(pdf_output)
                     
