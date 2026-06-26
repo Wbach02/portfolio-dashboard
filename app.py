@@ -284,6 +284,10 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
+        # Calculate the pure Excess Value generated/lost compared to benchmark
+        excess_value = total_value * weighted_diff
+        excess_str = f"+${excess_value:,.2f}" if excess_value >= 0 else f"-${abs(excess_value):,.2f}"
+        
         if port_weighted_return >= bench_weighted_return:
             port_bg, port_txt = "#d4edda", "#155724" 
             bench_bg, bench_txt = "#f8d7da", "#721c24" 
@@ -291,27 +295,39 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             port_bg, port_txt = "#f8d7da", "#721c24" 
             bench_bg, bench_txt = "#d4edda", "#155724" 
 
+        # Dashboard Summary Layout (Numbers on Left, Pie on Right)
         col_kpi, col_pie = st.columns([1, 1.2])
         
         with col_kpi:
+            # Box 1: Total Value (Gray)
             st.markdown(f"""
-            <div style="background-color: #f1f3f5; padding: 25px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #dee2e6;">
-                <p style="margin: 0; font-size: 1.3em; color: #495057; font-weight: bold;">Total Portfolio Value</p>
-                <h1 style="margin: 0; font-size: 3em; font-weight: bold; color: #212529;">${total_value:,.2f}</h1>
+            <div style="background-color: #f1f3f5; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #dee2e6;">
+                <p style="margin: 0; font-size: 1.1em; color: #495057; font-weight: bold; text-align: center;">Total Portfolio Value</p>
+                <h1 style="margin: 0; font-size: 2.2em; font-weight: bold; color: #212529; text-align: center;">${total_value:,.2f}</h1>
             </div>
             """, unsafe_allow_html=True)
 
+            # Box 2: Portfolio Return
             st.markdown(f"""
-            <div style="background-color: {port_bg}; padding: 25px; border-radius: 12px; margin-bottom: 20px; border: 1px solid {port_txt};">
-                <p style="margin: 0; font-size: 1.3em; color: {port_txt}; font-weight: bold;">Weighted Portfolio Return</p>
-                <h1 style="margin: 0; font-size: 3.5em; font-weight: bold; color: {port_txt};">{port_weighted_return:.2%}</h1>
+            <div style="background-color: {port_bg}; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid {port_txt};">
+                <p style="margin: 0; font-size: 1.1em; color: {port_txt}; font-weight: bold; text-align: center;">Weighted Portfolio Return</p>
+                <h1 style="margin: 0; font-size: 2.5em; font-weight: bold; color: {port_txt}; text-align: center;">{port_weighted_return:.2%}</h1>
             </div>
             """, unsafe_allow_html=True)
 
+            # Box 3: Benchmark Return
             st.markdown(f"""
-            <div style="background-color: {bench_bg}; padding: 25px; border-radius: 12px; border: 1px solid {bench_txt};">
-                <p style="margin: 0; font-size: 1.3em; color: {bench_txt}; font-weight: bold;">Weighted Benchmark Return</p>
-                <h1 style="margin: 0; font-size: 3em; font-weight: bold; color: {bench_txt};">{bench_weighted_return:.2%}</h1>
+            <div style="background-color: {bench_bg}; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid {bench_txt};">
+                <p style="margin: 0; font-size: 1.1em; color: {bench_txt}; font-weight: bold; text-align: center;">Weighted Benchmark Return</p>
+                <h1 style="margin: 0; font-size: 2.2em; font-weight: bold; color: {bench_txt}; text-align: center;">{bench_weighted_return:.2%}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Box 4: Excess Value
+            st.markdown(f"""
+            <div style="background-color: {port_bg}; padding: 15px; border-radius: 10px; border: 1px solid {port_txt};">
+                <p style="margin: 0; font-size: 1.1em; color: {port_txt}; font-weight: bold; text-align: center;">Excess Value Created</p>
+                <h1 style="margin: 0; font-size: 2.2em; font-weight: bold; color: {port_txt}; text-align: center;">{excess_str}</h1>
             </div>
             """, unsafe_allow_html=True)
             
@@ -417,7 +433,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             inc_holdings = st.checkbox("Performance Report Table", value=True)
             inc_bar = st.checkbox("Asset vs Benchmark Bar Chart", value=True)
             inc_risk = st.checkbox("Risk Summary & Correlation Matrix", value=True)
-            inc_corr = inc_risk # Ensures the correlation logic functions without error
+            inc_corr = inc_risk 
             
         if st.button("Generate PDF", type="primary"):
             if not client_name:
@@ -447,7 +463,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                 self.set_text_color(150, 150, 150)
                                 self.cell(0, 10, f"Page {self.page_no()}", align="C")
                                 if self.logo_path and os.path.exists(self.logo_path):
-                                    # Increased size in bottom right corner (from w=18 to w=25)
                                     self.image(self.logo_path, x=262, y=182, w=25)
 
                     logo_path = None
@@ -467,7 +482,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     pdf.add_page()
                     pdf.ln(50) 
                     pdf.set_font("Arial", "B", 42)
-                    pdf.set_text_color(27, 79, 49) # Forest Green Title
+                    pdf.set_text_color(27, 79, 49) 
                     pdf.cell(0, 15, "Portfolio Performance Report", ln=True, align="C")
                     
                     pdf.ln(15)
@@ -477,7 +492,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     pdf.cell(0, 10, f"Date: {datetime.datetime.now().strftime('%B %d, %Y')}", ln=True, align="C")
                     
                     if logo_path:
-                        # Scaled down enough to stay on Page 1, pushed to absolute bottom center
                         img_w = 90
                         x_pos = (297 - img_w) / 2
                         pdf.image(logo_path, x=x_pos, y=140, w=img_w)
@@ -488,20 +502,25 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.set_font("Arial", "B", 26)
                         pdf.set_text_color(0, 0, 0)
                         pdf.cell(0, 15, "Portfolio Summary", ln=True, align="L")
-                        pdf.ln(10)
+                        pdf.ln(5)
                         
                         f_pie = None
                         try:
-                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
-                            fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
-                            # Force white backgrounds to prevent Kaleido black box bugs
+                            # Force pastel colors, white background, and white borders to fix the Kaleido black box bug
+                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector', color_discrete_sequence=px.colors.qualitative.Pastel)
+                            fig_pie_pdf.update_traces(
+                                textposition='inside', 
+                                textinfo='percent+label', 
+                                textfont_size=24,
+                                marker=dict(line=dict(color='#FFFFFF', width=2))
+                            )
                             fig_pie_pdf.update_layout(
+                                template="plotly_white",
                                 showlegend=False, 
                                 margin=dict(t=10, b=10, l=10, r=10),
-                                paper_bgcolor='white',
-                                plot_bgcolor='white'
+                                paper_bgcolor='rgba(255,255,255,1)',
+                                plot_bgcolor='rgba(255,255,255,1)'
                             )
-                            # Flat JPG generator solves the alpha-transparency black box rendering bug
                             f_pie = save_plotly_as_jpg(fig_pie_pdf, 900, 900)
                         except Exception:
                             pass
@@ -519,41 +538,56 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         y_start_summary = pdf.get_y()
                         pdf.set_x(15)
-                        box_w = 120
+                        box_w = 110 # Slightly shrunk to stack 4 vertically
                         
-                        pdf.set_font("Arial", "B", 16)
+                        # Box 1: Total Value
+                        pdf.set_font("Arial", "B", 14)
                         pdf.set_fill_color(226, 227, 229)
                         pdf.set_text_color(56, 61, 65)
-                        pdf.cell(box_w, 14, "Total Portfolio Value", border=1, align="C", fill=True)
+                        pdf.cell(box_w, 10, "Total Portfolio Value", border=1, align="C", fill=True)
                         pdf.ln()
                         pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 36)
-                        pdf.cell(box_w, 30, f"${total_value:,.0f}", border=1, align="C", fill=True)
-                        pdf.ln(30)
+                        pdf.set_font("Arial", "B", 24)
+                        pdf.cell(box_w, 20, f"${total_value:,.0f}", border=1, align="C", fill=True)
+                        pdf.ln(20)
                         
+                        # Box 2: Portfolio Return
                         pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 16)
+                        pdf.set_font("Arial", "B", 14)
                         pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b)
                         pdf.set_text_color(p_txt_r, p_txt_g, p_txt_b)
-                        pdf.cell(box_w, 14, "Weighted Portfolio Return", border=1, align="C", fill=True)
+                        pdf.cell(box_w, 10, "Weighted Portfolio Return", border=1, align="C", fill=True)
                         pdf.ln()
                         pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 42)
-                        pdf.cell(box_w, 35, f"{port_weighted_return:.2%}", border=1, align="C", fill=True)
-                        pdf.ln(30)
+                        pdf.set_font("Arial", "B", 28)
+                        pdf.cell(box_w, 22, f"{port_weighted_return:.2%}", border=1, align="C", fill=True)
+                        pdf.ln(20)
                         
+                        # Box 3: Benchmark Return
                         pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 16)
+                        pdf.set_font("Arial", "B", 14)
                         pdf.set_fill_color(b_fill_r, b_fill_g, b_fill_b)
                         pdf.set_text_color(b_txt_r, b_txt_g, b_txt_b)
-                        pdf.cell(box_w, 14, "Weighted Benchmark Return", border=1, align="C", fill=True)
+                        pdf.cell(box_w, 10, "Weighted Benchmark Return", border=1, align="C", fill=True)
                         pdf.ln()
                         pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 36)
-                        pdf.cell(box_w, 30, f"{bench_weighted_return:.2%}", border=1, align="C", fill=True)
+                        pdf.set_font("Arial", "B", 24)
+                        pdf.cell(box_w, 20, f"{bench_weighted_return:.2%}", border=1, align="C", fill=True)
+                        pdf.ln(20)
+
+                        # Box 4: Excess Value
+                        pdf.set_x(15)
+                        pdf.set_font("Arial", "B", 14)
+                        pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b) # Colors match portfolio return
+                        pdf.set_text_color(p_txt_r, p_txt_g, p_txt_b)
+                        pdf.cell(box_w, 10, "Excess Value Created", border=1, align="C", fill=True)
+                        pdf.ln()
+                        pdf.set_x(15)
+                        pdf.set_font("Arial", "B", 24)
+                        pdf.cell(box_w, 20, excess_str, border=1, align="C", fill=True)
                         
                         if f_pie and os.path.exists(f_pie):
-                            pdf.image(f_pie, x=145, y=y_start_summary, w=140)
+                            pdf.image(f_pie, x=135, y=y_start_summary, w=145)
                             os.remove(f_pie)
 
                     # --- PAGE 3: PERFORMANCE REPORT HOLDINGS ---
@@ -664,6 +698,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
                                                  color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
                             fig_bar_pdf.update_layout(
+                                template="plotly_white",
                                 yaxis_tickformat='.2%', 
                                 margin=dict(l=140, r=20, t=20, b=50), 
                                 legend_title_text='',
@@ -671,8 +706,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                 xaxis=dict(title="", tickfont=dict(size=26)),
                                 yaxis=dict(title="", tickfont=dict(size=26)),
                                 legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                                paper_bgcolor='white',
-                                plot_bgcolor='white'
+                                paper_bgcolor='rgba(255,255,255,1)',
+                                plot_bgcolor='rgba(255,255,255,1)'
                             )
                             f_bar_jpg = save_plotly_as_jpg(fig_bar_pdf, 1400, 650)
                             
@@ -689,12 +724,12 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.add_page(orientation='L')
                         
                         if inc_risk:
-                            pdf.set_font("Arial", "B", 22) # Font shrunk 10% from 26
+                            pdf.set_font("Arial", "B", 22) 
                             pdf.cell(0, 10, "Risk Summary", ln=True, align="L")
                             pdf.ln(5)
                             
                             # Boxes Shrunk by 10% to ensure large matrix space
-                            r_box_w = 45 
+                            r_box_w = 40 
                             spacing = 4
                             total_r_w = (r_box_w * 4) + (spacing * 3)
                             x_r_start = (297 - total_r_w) / 2
@@ -711,32 +746,33 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                 pdf.set_x(x_r_start)
                                 pdf.set_fill_color(27, 79, 49)
                                 pdf.set_text_color(255, 255, 255)
-                                pdf.set_font("Arial", "B", 10) 
+                                pdf.set_font("Arial", "B", 9) 
                                 pdf.cell(r_box_w, 8, title, border=1, align='C', fill=True)
                                 
                                 pdf.set_xy(x_r_start, y_boxes_start + 8)
                                 pdf.set_fill_color(245, 247, 245)
                                 pdf.set_text_color(0, 0, 0)
-                                pdf.set_font("Arial", "B", 14)
-                                pdf.cell(r_box_w, 12, val, border=1, align='C', fill=True)
+                                pdf.set_font("Arial", "B", 12)
+                                pdf.cell(r_box_w, 10, val, border=1, align='C', fill=True)
                                 
                                 x_r_start += r_box_w + spacing
                                 pdf.set_y(y_boxes_start) 
                                 
-                            pdf.set_y(y_boxes_start + 20)
-                            pdf.ln(10) # Minimized padding to merge seamlessly 
+                            pdf.set_y(y_boxes_start + 18)
+                            pdf.ln(5) # Minimized padding to merge seamlessly 
 
                         if inc_corr and fig_corr is not None:
                             try:
                                 fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
                                                          zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                # Size 12 fonts, massive margins, rotated 45deg labels to prevent ALL overlap
+                                # Size 14 fonts, massive margins, rotated 45deg labels to prevent ALL overlap
                                 fig_corr_pdf.update_layout(
+                                    template="plotly_white",
                                     margin=dict(l=100, r=20, t=10, b=100), 
-                                    font=dict(size=12),
+                                    font=dict(size=14),
                                     xaxis_tickangle=-45,
-                                    paper_bgcolor='white',
-                                    plot_bgcolor='white'
+                                    paper_bgcolor='rgba(255,255,255,1)',
+                                    plot_bgcolor='rgba(255,255,255,1)'
                                 )
                                 f_corr_jpg = save_plotly_as_jpg(fig_corr_pdf, 1100, 600)
                                 
