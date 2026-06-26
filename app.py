@@ -44,14 +44,34 @@ def standardize_type(raw_type):
     if 'STOCK' in t_upper or 'EQUITY' in t_upper: return 'Stock'
     return str(raw_type)
 
-def standardize_sector(sector):
-    """Applies professional nicknames to long sector/category strings."""
+def standardize_sector(sector, ticker):
+    """Applies professional nicknames and specific overrides to sector/category strings."""
+    ticker_upper = str(ticker).upper()
+    
+    # 1. Hardcoded Overrides based on Advisor Preference
+    overrides = {
+        'MLPX': 'Energy',
+        'GLD': 'Commodities',
+        'EFEIX': 'Emerging Markets',
+        'DTCR': 'Real Estate',
+        'EELV': 'Emerging Markets',
+        'AMZN': 'Consumer Cyclical',
+        'DECK': 'Consumer Cyclical'
+    }
+    if ticker_upper in overrides:
+        return overrides[ticker_upper]
+        
+    if pd.isna(sector) or not sector:
+        return 'Other'
+        
+    # 2. General Clean-up Mappings
     mapping = {
         "Communication Services": "Communication",
         "Commodities Focused": "Commodities",
-        "Energy Limited Partnership": "Energy"
+        "Energy Limited Partnership": "Energy",
+        "Consumer Defensive": "Consumer Cyclical" # Consolidates defensive into cyclical if preferred
     }
-    return mapping.get(sector, sector)
+    return mapping.get(sector, str(sector))
 
 @st.cache_data
 def fetch_security_details(ticker):
@@ -62,16 +82,14 @@ def fetch_security_details(ticker):
         qtype = info.get('quoteType', 'Unknown')
         
         # Robust Sector/Category fetching for Equities, ETFs, and Mutual Funds
-        sector = info.get('sector')
-        if not sector: sector = info.get('category')
-        if not sector: sector = info.get('fundCategory')
-        if not sector: sector = info.get('industry')
-        if not sector: sector = info.get('family') # Final fallback for obscure mutual funds
-        if not sector: sector = 'Other'
+        if qtype in ['ETF', 'MUTUALFUND']:
+            sector = info.get('category') or info.get('fundCategory') or info.get('family') or info.get('sector') or 'Other'
+        else:
+            sector = info.get('sector') or info.get('industry') or 'Other'
         
-        return name, standardize_type(qtype), standardize_sector(sector)
+        return name, standardize_type(qtype), standardize_sector(sector, ticker)
     except:
-        return ticker, 'Unknown', 'Other'
+        return ticker, 'Unknown', standardize_sector('Other', ticker)
 
 def fetch_risk_metrics(ticker, benchmark, start_date):
     """Fetches historical data to calculate True Total Return using Adj Close."""
@@ -173,7 +191,8 @@ with col_upload:
                     df['Sector'] = df['Ticker'].map(lambda x: details_dict.get(x, ('', '', 'Other'))[2])
                 
                 df['Type'] = df['Type'].apply(standardize_type)
-                df['Sector'] = df['Sector'].apply(standardize_sector)
+                # Re-apply standardize_sector across all rows to catch custom overrides
+                df['Sector'] = df.apply(lambda row: standardize_sector(row['Sector'], row['Ticker']), axis=1)
                 
                 df = df[["Delete", "Security Name", "Type", "Sector", "Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
                 
@@ -213,8 +232,10 @@ with col_manual:
 st.header("2. Manage Portfolio")
 st.markdown("Check the **Delete** box on the left of any row and click the **Delete Selected Rows** button below to remove it.")
 
+# Added key="portfolio_table" to lock the UI state and completely prevent jumping to the top of the page!
 edited_portfolio = st.data_editor(
     st.session_state.portfolio,
+    key="portfolio_table",
     num_rows="dynamic",
     use_container_width=True,
     column_config={
