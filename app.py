@@ -13,16 +13,18 @@ import textwrap
 st.set_page_config(page_title="Portfolio Performance", layout="wide")
 st.title("Portfolio Performance Dashboard")
 
-# Initialize session state (Includes data migration for new Name, Type, and Sector columns)
+# Initialize session state (Includes data migration for Delete, Name, Type, and Sector columns)
 if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = pd.DataFrame(columns=["Security Name", "Type", "Sector", "Ticker", "Amount", "Purchase Date", "Benchmark"])
+    st.session_state.portfolio = pd.DataFrame(columns=["Delete", "Security Name", "Type", "Sector", "Ticker", "Amount", "Purchase Date", "Benchmark"])
 else:
+    if "Delete" not in st.session_state.portfolio.columns:
+        st.session_state.portfolio.insert(0, "Delete", False)
     if "Security Name" not in st.session_state.portfolio.columns:
-        st.session_state.portfolio.insert(0, "Security Name", "")
+        st.session_state.portfolio.insert(1, "Security Name", "")
     if "Type" not in st.session_state.portfolio.columns:
-        st.session_state.portfolio.insert(1, "Type", "")
+        st.session_state.portfolio.insert(2, "Type", "")
     if "Sector" not in st.session_state.portfolio.columns:
-        st.session_state.portfolio.insert(2, "Sector", "Unknown")
+        st.session_state.portfolio.insert(3, "Sector", "Unknown")
 
 def get_benchmark(ticker):
     commodities = ['GLD', 'SLV', 'PDBC', 'IAU']
@@ -64,6 +66,7 @@ def fetch_security_details(ticker):
         if not sector: sector = info.get('category')
         if not sector: sector = info.get('fundCategory')
         if not sector: sector = info.get('industry')
+        if not sector: sector = info.get('family') # Final fallback for obscure mutual funds
         if not sector: sector = 'Other'
         
         return name, standardize_type(qtype), standardize_sector(sector)
@@ -159,6 +162,9 @@ with col_upload:
                 unique_tickers = df['Ticker'].dropna().unique()
                 details_dict = {t: fetch_security_details(t) for t in unique_tickers}
                 
+                # Assign default Delete status
+                df['Delete'] = False 
+                
                 if 'Security Name' not in df.columns: 
                     df['Security Name'] = df['Ticker'].map(lambda x: details_dict.get(x, (x, '', ''))[0])
                 if 'Type' not in df.columns: 
@@ -169,7 +175,7 @@ with col_upload:
                 df['Type'] = df['Type'].apply(standardize_type)
                 df['Sector'] = df['Sector'].apply(standardize_sector)
                 
-                df = df[["Security Name", "Type", "Sector", "Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
+                df = df[["Delete", "Security Name", "Type", "Sector", "Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
                 
                 if df['Amount'].dtype == 'object':
                     df['Amount'] = df['Amount'].astype(str).str.replace(',', '').str.replace('$', '')
@@ -178,7 +184,7 @@ with col_upload:
                 df['Purchase Date'] = pd.to_datetime(df['Purchase Date'], errors='coerce')
                 df = df.dropna(subset=["Purchase Date"]) 
                 
-                df = df.groupby(['Security Name', 'Type', 'Sector', 'Ticker'], as_index=False).agg({'Amount': 'sum', 'Purchase Date': 'min'})
+                df = df.groupby(['Delete', 'Security Name', 'Type', 'Sector', 'Ticker'], as_index=False).agg({'Amount': 'sum', 'Purchase Date': 'min'})
                 df['Benchmark'] = df['Ticker'].apply(get_benchmark)
                 
                 st.session_state.portfolio = pd.concat([st.session_state.portfolio, df], ignore_index=True)
@@ -195,6 +201,7 @@ with col_manual:
         if st.form_submit_button("Add Single Position") and new_ticker:
             name, qtype, sector = fetch_security_details(new_ticker)
             new_row = pd.DataFrame({
+                "Delete": [False],
                 "Security Name": [name], "Type": [qtype], "Sector": [sector],
                 "Ticker": [new_ticker], "Amount": [new_amount],
                 "Purchase Date": [new_date], "Benchmark": [get_benchmark(new_ticker)]
@@ -204,13 +211,14 @@ with col_manual:
 
 # --- SECTION 2: MANAGE & EDIT PORTFOLIO ---
 st.header("2. Manage Portfolio")
-st.markdown("Check the box on the left of any row and press **Delete** to remove it.")
+st.markdown("Check the **Delete** box on the left of any row and click the **Delete Selected Rows** button below to remove it.")
 
 edited_portfolio = st.data_editor(
     st.session_state.portfolio,
     num_rows="dynamic",
     use_container_width=True,
     column_config={
+        "Delete": st.column_config.CheckboxColumn("Delete?", default=False),
         "Type": st.column_config.TextColumn("Type", help="Hover Info: Describes whether the asset is an Equity, ETF, Mutual Fund, etc."),
         "Sector": st.column_config.TextColumn("Sector", help="The industry category of the asset."),
         "Purchase Date": st.column_config.DateColumn("Purchase Date", format="MM/DD/YYYY"),
@@ -219,9 +227,18 @@ edited_portfolio = st.data_editor(
 )
 st.session_state.portfolio = edited_portfolio
 
-if st.button("Clear Entire Portfolio"):
-    st.session_state.portfolio = pd.DataFrame(columns=["Security Name", "Type", "Sector", "Ticker", "Amount", "Purchase Date", "Benchmark"])
-    st.rerun()
+# Custom visible buttons for deleting rows or clearing the portfolio
+col_del1, col_del2 = st.columns(2)
+with col_del1:
+    if st.button("🗑️ Delete Selected Rows", type="primary"):
+        # Keep only the rows where Delete is False
+        st.session_state.portfolio = st.session_state.portfolio[st.session_state.portfolio["Delete"] == False].reset_index(drop=True)
+        st.rerun()
+
+with col_del2:
+    if st.button("⚠️ Clear Entire Portfolio"):
+        st.session_state.portfolio = pd.DataFrame(columns=["Delete", "Security Name", "Type", "Sector", "Ticker", "Amount", "Purchase Date", "Benchmark"])
+        st.rerun()
 
 st.divider()
 
