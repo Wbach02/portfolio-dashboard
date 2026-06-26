@@ -3,7 +3,8 @@ yfinance
 pandas
 openpyxl
 numpy
-fpdf
+fpdf2
 plotly
 Pillow
-kaleido
+kaleido==0.1.0.post1
+matplotlib
