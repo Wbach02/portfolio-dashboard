@@ -91,9 +91,12 @@ def fetch_security_details(ticker):
         if not sector: sector = info.get('family')
         if not sector: sector = 'Other'
         
-        # Pulling exact trailing yield decimal
+        # Pulling exact trailing yield decimal and scaling to whole numbers for user-friendly table input
         div_yield = info.get('trailingAnnualDividendYield', info.get('dividendYield', 0.0))
         if div_yield is None: div_yield = 0.0
+        div_yield = float(div_yield)
+        if div_yield > 0.0 and div_yield < 1.0:
+            div_yield *= 100.0 # Scales 0.0423 up to 4.23 so it reads correctly
         
         return name, standardize_type(qtype), standardize_sector(sector, ticker), float(div_yield)
     except:
@@ -232,7 +235,7 @@ edited_portfolio = st.data_editor(
     column_config={
         "Type": st.column_config.TextColumn("Type", help="Hover Info: Describes whether the asset is an Equity, ETF, Mutual Fund, etc."),
         "Sector": st.column_config.TextColumn("Sector", help="The industry category of the asset."),
-        "Yield": st.column_config.NumberColumn("Yield", format="%.4f"),
+        "Yield": st.column_config.NumberColumn("Yield (%)", format="%.2f"),
         "Purchase Date": st.column_config.DateColumn("Purchase Date", format="MM/DD/YYYY"),
         "Amount": st.column_config.NumberColumn("Amount", format="$%.2f")
     }
@@ -403,7 +406,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             st.metric("Weighted Beta", f"{w_beta:.2f}")
             st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}")
             st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}")
-            st.metric("Weighted Dividend Yield", f"{w_yield:.2%}")
+            st.metric("Weighted Dividend Yield", f"{w_yield / 100.0:.2%}")
 
         with col_matrix:
             st.markdown("**Position Correlation Matrix**")
@@ -519,12 +522,12 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            # Reverting to the functional Kaleido PNG export method
+                            # Direct kaleido write_image (Reverts black box flattening attempts)
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_pie_file:
                                 f_pie = f_pie_file.name
                                 fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
                                 fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
-                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
+                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10))
                                 fig_pie_pdf.write_image(f_pie, format="png", engine="kaleido", width=800, height=800, scale=2)
                         except Exception:
                             pass
@@ -698,7 +701,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_bar_file:
                                 f_bar = f_bar_file.name
                                 fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group', color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
-                                fig_bar_pdf.update_layout(yaxis_tickformat='.2%', margin=dict(l=140, r=20, t=20, b=50), legend_title_text='', font=dict(size=26), xaxis=dict(title="", tickfont=dict(size=26)), yaxis=dict(title="", tickfont=dict(size=26)), legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), paper_bgcolor='white', plot_bgcolor='white')
+                                fig_bar_pdf.update_layout(yaxis_tickformat='.2%', margin=dict(l=140, r=20, t=20, b=50), legend_title_text='', font=dict(size=26), xaxis=dict(title="", tickfont=dict(size=26)), yaxis=dict(title="", tickfont=dict(size=26)), legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                                 fig_bar_pdf.write_image(f_bar, format="png", engine="kaleido", width=1400, height=650, scale=2)
                                 
                                 img_w = 277 
@@ -727,7 +730,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             ("Weighted Beta", f"{w_beta:.2f}"),
                             ("Weighted Sharpe", f"{w_sharpe:.2f}"),
                             ("Weighted Std Dev", f"{w_stddev:.2%}"),
-                            ("Dividend Yield", f"{w_yield:.2%}")
+                            ("Dividend Yield", f"{w_yield / 100.0:.2%}")
                         ]
                         
                         y_boxes_start = pdf.get_y()
@@ -748,17 +751,17 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             pdf.set_y(y_boxes_start) 
                             
                         pdf.set_y(y_boxes_start + 18)
-                        pdf.ln(2) # Flush padding
+                        pdf.ln(2) 
 
                         if fig_corr is not None:
                             try:
                                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr_file:
                                     f_corr = f_corr_file.name
                                     fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                    fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=12), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
-                                    fig_corr_pdf.write_image(f_corr, format="png", engine="kaleido", width=1100, height=500, scale=2)
+                                    fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=14), xaxis_tickangle=-45)
+                                    fig_corr_pdf.write_image(f_corr, format="png", engine="kaleido", width=1400, height=700, scale=2)
                                     
-                                    img_w = 240
+                                    img_w = 260
                                     x_pos = (297 - img_w) / 2
                                     current_y = pdf.get_y()
                                     pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
