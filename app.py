@@ -247,7 +247,7 @@ edited_portfolio = st.data_editor(
     column_config={
         "Type": st.column_config.TextColumn("Type", help="Hover Info: Describes whether the asset is an Equity, ETF, Mutual Fund, etc."),
         "Sector": st.column_config.TextColumn("Sector", help="The industry category of the asset."),
-        "Yield": st.column_config.NumberColumn("Yield (%)", format="%.2f"),
+        "Yield": st.column_config.NumberColumn("Yield", format="%.4f"),
         "Purchase Date": st.column_config.DateColumn("Purchase Date", format="MM/DD/YYYY"),
         "Amount": st.column_config.NumberColumn("Amount", format="$%.2f")
     }
@@ -534,7 +534,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector', hole=0.4)
+                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
                             fig_pie_pdf.update_traces(
                                 textposition='inside', 
                                 textinfo='percent+label', 
@@ -782,7 +782,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                     paper_bgcolor='white', 
                                     plot_bgcolor='white'
                                 )
-                                f_corr_jpg = save_plotly_as_jpg(fig_corr_pdf, 1500, 700)
+                                f_corr_jpg = save_plotly_as_jpg(fig_corr_pdf, 1500, 650)
                                 
                                 img_w = 265
                                 x_pos = (297 - img_w) / 2
