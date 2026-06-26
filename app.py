@@ -7,27 +7,27 @@ from fpdf import FPDF
 import tempfile
 import os
 import plotly.express as px
+import matplotlib.pyplot as plt
 from PIL import Image
 import textwrap
 
 st.set_page_config(page_title="Portfolio Performance", layout="wide")
 st.title("Portfolio Performance Dashboard")
 
-# Initialize session state (Cleaned up: Removed custom Delete column)
+# Initialize session state (Includes data migration for Delete, Name, Type, Sector, and Yield columns)
 if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = pd.DataFrame(columns=["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Purchase Date", "Benchmark"])
+    st.session_state.portfolio = pd.DataFrame(columns=["Delete", "Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Purchase Date", "Benchmark"])
 else:
-    # Ensure legacy session states get updated
-    if "Delete" in st.session_state.portfolio.columns:
-        st.session_state.portfolio = st.session_state.portfolio.drop(columns=["Delete"])
+    if "Delete" not in st.session_state.portfolio.columns:
+        st.session_state.portfolio.insert(0, "Delete", False)
     if "Security Name" not in st.session_state.portfolio.columns:
-        st.session_state.portfolio.insert(0, "Security Name", "")
+        st.session_state.portfolio.insert(1, "Security Name", "")
     if "Type" not in st.session_state.portfolio.columns:
-        st.session_state.portfolio.insert(1, "Type", "")
+        st.session_state.portfolio.insert(2, "Type", "")
     if "Sector" not in st.session_state.portfolio.columns:
-        st.session_state.portfolio.insert(2, "Sector", "Unknown")
+        st.session_state.portfolio.insert(3, "Sector", "Unknown")
     if "Yield" not in st.session_state.portfolio.columns:
-        st.session_state.portfolio.insert(3, "Yield", 0.0)
+        st.session_state.portfolio.insert(4, "Yield", 0.0)
 
 def get_benchmark(ticker):
     commodities = ['GLD', 'SLV', 'PDBC', 'IAU']
@@ -72,18 +72,19 @@ def standardize_sector(sector, ticker):
         "Communication Services": "Communication",
         "Commodities Focused": "Commodities",
         "Energy Limited Partnership": "Energy",
-        "Consumer Defensive": "Consumer Cyclical" 
+        "Consumer Defensive": "Consumer Cyclical" # Consolidates defensive into cyclical
     }
     return mapping.get(sector, str(sector))
 
 @st.cache_data
 def fetch_security_details(ticker):
-    """Fetches the official company name, asset type, sector, and trailing yield from Yahoo Finance."""
+    """Fetches the official company name, asset type, sector, and yield from Yahoo Finance."""
     try:
         info = yf.Ticker(ticker).info
         name = info.get('shortName', info.get('longName', ticker))
         qtype = info.get('quoteType', 'Unknown')
         
+        # Deep extraction to minimize "Other"
         sector = info.get('sector')
         if not sector: sector = info.get('category')
         if not sector: sector = info.get('fundCategory')
@@ -91,18 +92,16 @@ def fetch_security_details(ticker):
         if not sector: sector = info.get('family')
         if not sector: sector = 'Other'
         
-        # Pulling exact trailing yield decimal and scaling to whole numbers for user-friendly table input
+        # Fetch Trailing Dividend Yield
         div_yield = info.get('trailingAnnualDividendYield', info.get('dividendYield', 0.0))
         if div_yield is None: div_yield = 0.0
-        div_yield = float(div_yield)
-        if div_yield > 0.0 and div_yield < 1.0:
-            div_yield *= 100.0 # Scales 0.0423 up to 4.23 so it reads correctly
         
         return name, standardize_type(qtype), standardize_sector(sector, ticker), float(div_yield)
     except:
         return ticker, 'Unknown', standardize_sector('Other', ticker), 0.0
 
 def fetch_risk_metrics(ticker, benchmark, start_date):
+    """Fetches historical data to calculate True Total Return using Adj Close."""
     try:
         raw_data = yf.download([ticker, benchmark], start=start_date, progress=False, auto_adjust=False)
         
@@ -190,6 +189,9 @@ with col_upload:
                 unique_tickers = df['Ticker'].dropna().unique()
                 details_dict = {t: fetch_security_details(t) for t in unique_tickers}
                 
+                # Assign default Delete status
+                df['Delete'] = False 
+                
                 if 'Security Name' not in df.columns: 
                     df['Security Name'] = df['Ticker'].map(lambda x: details_dict.get(x, (x, '', '', 0.0))[0])
                 if 'Type' not in df.columns: 
@@ -200,9 +202,10 @@ with col_upload:
                     df['Yield'] = df['Ticker'].map(lambda x: details_dict.get(x, ('', '', '', 0.0))[3])
                 
                 df['Type'] = df['Type'].apply(standardize_type)
+                # Re-apply standardize_sector across all rows to catch custom overrides
                 df['Sector'] = df.apply(lambda row: standardize_sector(row['Sector'], row['Ticker']), axis=1)
                 
-                df = df[["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
+                df = df[["Delete", "Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
                 
                 if df['Amount'].dtype == 'object':
                     df['Amount'] = df['Amount'].astype(str).str.replace(',', '').str.replace('$', '')
@@ -211,7 +214,7 @@ with col_upload:
                 df['Purchase Date'] = pd.to_datetime(df['Purchase Date'], errors='coerce')
                 df = df.dropna(subset=["Purchase Date"]) 
                 
-                df = df.groupby(['Security Name', 'Type', 'Sector', 'Yield', 'Ticker'], as_index=False).agg({'Amount': 'sum', 'Purchase Date': 'min'})
+                df = df.groupby(['Delete', 'Security Name', 'Type', 'Sector', 'Yield', 'Ticker'], as_index=False).agg({'Amount': 'sum', 'Purchase Date': 'min'})
                 df['Benchmark'] = df['Ticker'].apply(get_benchmark)
                 
                 st.session_state.portfolio = pd.concat([st.session_state.portfolio, df], ignore_index=True)
@@ -228,6 +231,7 @@ with col_manual:
         if st.form_submit_button("Add Single Position") and new_ticker:
             name, qtype, sector, div_yield = fetch_security_details(new_ticker)
             new_row = pd.DataFrame({
+                "Delete": [False],
                 "Security Name": [name], "Type": [qtype], "Sector": [sector], "Yield": [div_yield],
                 "Ticker": [new_ticker], "Amount": [new_amount],
                 "Purchase Date": [new_date], "Benchmark": [get_benchmark(new_ticker)]
@@ -237,7 +241,7 @@ with col_manual:
 
 # --- SECTION 2: MANAGE & EDIT PORTFOLIO ---
 st.header("2. Manage Portfolio")
-st.markdown("To delete a row, click the box on the far left edge of the table to select it, then press the **Delete** key on your keyboard or click the trash can icon in the top right of the table.")
+st.markdown("Check the **Delete** box on the left of any row and click the **Delete Selected Rows** button below to remove it.")
 
 edited_portfolio = st.data_editor(
     st.session_state.portfolio,
@@ -245,6 +249,7 @@ edited_portfolio = st.data_editor(
     num_rows="dynamic",
     use_container_width=True,
     column_config={
+        "Delete": st.column_config.CheckboxColumn("Delete?", default=False),
         "Type": st.column_config.TextColumn("Type", help="Hover Info: Describes whether the asset is an Equity, ETF, Mutual Fund, etc."),
         "Sector": st.column_config.TextColumn("Sector", help="The industry category of the asset."),
         "Yield": st.column_config.NumberColumn("Yield", format="%.4f"),
@@ -254,9 +259,18 @@ edited_portfolio = st.data_editor(
 )
 st.session_state.portfolio = edited_portfolio
 
-if st.button("⚠️ Clear Entire Portfolio"):
-    st.session_state.portfolio = pd.DataFrame(columns=["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Purchase Date", "Benchmark"])
-    st.rerun()
+# Custom visible buttons for deleting rows or clearing the portfolio
+col_del1, col_del2 = st.columns(2)
+with col_del1:
+    if st.button("🗑️ Delete Selected Rows", type="primary"):
+        # Keep only the rows where Delete is False
+        st.session_state.portfolio = st.session_state.portfolio[st.session_state.portfolio["Delete"] == False].reset_index(drop=True)
+        st.rerun()
+
+with col_del2:
+    if st.button("⚠️ Clear Entire Portfolio"):
+        st.session_state.portfolio = pd.DataFrame(columns=["Delete", "Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Purchase Date", "Benchmark"])
+        st.rerun()
 
 st.divider()
 
@@ -319,6 +333,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
+        # Calculate the pure Excess Value generated/lost compared to benchmark
         excess_value = total_value * weighted_diff
         excess_str = f"+${excess_value:,.2f}" if excess_value >= 0 else f"-${abs(excess_value):,.2f}"
         
@@ -329,9 +344,11 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             port_bg, port_txt = "#f8d7da", "#721c24" 
             bench_bg, bench_txt = "#d4edda", "#155724" 
 
+        # Dashboard Summary Layout (Numbers on Left, Pie on Right)
         col_kpi, col_pie = st.columns([1, 1.2])
         
         with col_kpi:
+            # Box 1: Total Value (Gray)
             st.markdown(f"""
             <div style="background-color: #f1f3f5; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #dee2e6;">
                 <p style="margin: 0; font-size: 1.1em; color: #495057; font-weight: bold; text-align: center;">Total Portfolio Value</p>
@@ -339,6 +356,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             </div>
             """, unsafe_allow_html=True)
 
+            # Box 2: Portfolio Return
             st.markdown(f"""
             <div style="background-color: {port_bg}; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid {port_txt};">
                 <p style="margin: 0; font-size: 1.1em; color: {port_txt}; font-weight: bold; text-align: center;">Weighted Portfolio Return</p>
@@ -346,6 +364,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             </div>
             """, unsafe_allow_html=True)
 
+            # Box 3: Benchmark Return
             st.markdown(f"""
             <div style="background-color: {bench_bg}; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid {bench_txt};">
                 <p style="margin: 0; font-size: 1.1em; color: {bench_txt}; font-weight: bold; text-align: center;">Weighted Benchmark Return</p>
@@ -353,6 +372,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             </div>
             """, unsafe_allow_html=True)
             
+            # Box 4: Excess Value
             st.markdown(f"""
             <div style="background-color: {port_bg}; padding: 15px; border-radius: 10px; border: 1px solid {port_txt};">
                 <p style="margin: 0; font-size: 1.1em; color: {port_txt}; font-weight: bold; text-align: center;">Excess Value Created</p>
@@ -361,6 +381,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             """, unsafe_allow_html=True)
             
         with col_pie:
+            # Aggregating tickers and amounts for the hover tooltip logic
             hover_data = []
             for sector, group in calc_df.groupby('Sector'):
                 group = group.sort_values('Amount', ascending=False)
@@ -404,6 +425,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         
         st.divider()
         
+        # Calculate 5th Metric (Yield)
         w_alpha = (calc_df['Alpha'] * weights).sum()
         w_beta = (calc_df['Beta'] * weights).sum()
         w_sharpe = (calc_df['Sharpe'] * weights).sum()
@@ -414,11 +436,11 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         
         with col_metrics:
             st.markdown("**Risk Summary**")
-            st.metric("Weighted Alpha", f"{w_alpha:.4f}", help="Excess return of the portfolio relative to the benchmark. Positive alpha means outperformance.")
-            st.metric("Weighted Beta", f"{w_beta:.2f}", help="Volatility relative to the benchmark. < 1.0 is less volatile, > 1.0 is more volatile.")
-            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}", help="Risk-adjusted return. How much excess return is received for the extra volatility. Higher is better.")
-            st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}", help="Absolute volatility/risk over the period.")
-            st.metric("Weighted Dividend Yield", f"{w_yield / 100.0:.2%}", help="The weighted average trailing 12-month dividend yield of the portfolio.")
+            st.metric("Weighted Alpha", f"{w_alpha:.4f}")
+            st.metric("Weighted Beta", f"{w_beta:.2f}")
+            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}")
+            st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}")
+            st.metric("Weighted Dividend Yield", f"{w_yield:.2%}")
 
         with col_matrix:
             st.markdown("**Position Correlation Matrix**")
@@ -470,6 +492,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             else:
                 with st.spinner("Building Professional PDF..."):
                     
+                    # Custom PDF class for automatic headers/footers
                     class ProfessionalPDF(FPDF):
                         def __init__(self, logo_path, client_name):
                             super().__init__(orientation='L', unit='mm', format='A4')
@@ -534,20 +557,22 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
-                            fig_pie_pdf.update_traces(
-                                textposition='inside', 
-                                textinfo='percent+label', 
-                                textfont_size=24,
-                                marker=dict(line=dict(color='#FFFFFF', width=2))
+                            # MATPLOTLIB: The ultimate fix for headless Linux Plotly Pie bugs
+                            fig, ax = plt.subplots(figsize=(9, 9), facecolor='white')
+                            colors = plt.cm.Pastel1.colors
+                            
+                            wedges, texts, autotexts = ax.pie(
+                                sector_df['Amount'], labels=sector_df['Sector'], 
+                                autopct='%1.1f%%', startangle=140, colors=colors, 
+                                textprops={'fontsize': 16, 'weight': 'bold', 'color': '#333333'},
+                                wedgeprops={'edgecolor': 'white', 'linewidth': 2}
                             )
-                            fig_pie_pdf.update_layout(
-                                showlegend=False, 
-                                margin=dict(t=10, b=10, l=10, r=10),
-                                paper_bgcolor='white',
-                                plot_bgcolor='white'
-                            )
-                            f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
+                            ax.axis('equal')
+                            
+                            tmp_pie = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+                            fig.savefig(tmp_pie, format='jpg', bbox_inches='tight', dpi=300)
+                            plt.close(fig)
+                            f_pie = tmp_pie
                         except Exception:
                             pass
 
@@ -566,6 +591,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.set_x(15)
                         box_w = 110 
                         
+                        # Box 1: Total Value
                         pdf.set_font("Arial", "B", 14)
                         pdf.set_fill_color(226, 227, 229)
                         pdf.set_text_color(56, 61, 65)
@@ -576,6 +602,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(box_w, 20, f"${total_value:,.0f}", border=1, align="C", fill=True)
                         pdf.ln(20)
                         
+                        # Box 2: Portfolio Return
                         pdf.set_x(15)
                         pdf.set_font("Arial", "B", 14)
                         pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b)
@@ -587,6 +614,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(box_w, 22, f"{port_weighted_return:.2%}", border=1, align="C", fill=True)
                         pdf.ln(20)
                         
+                        # Box 3: Benchmark Return
                         pdf.set_x(15)
                         pdf.set_font("Arial", "B", 14)
                         pdf.set_fill_color(b_fill_r, b_fill_g, b_fill_b)
@@ -598,6 +626,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(box_w, 20, f"{bench_weighted_return:.2%}", border=1, align="C", fill=True)
                         pdf.ln(20)
 
+                        # Box 4: Excess Value
                         pdf.set_x(15)
                         pdf.set_font("Arial", "B", 14)
                         pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b) 
@@ -717,16 +746,26 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(0, 15, "Asset vs Benchmark Performance", ln=True, align="L")
                         pdf.ln(5)
                         try:
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_bar_file:
-                                f_bar = f_bar_file.name
-                                fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group', color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
-                                fig_bar_pdf.update_layout(yaxis_tickformat='.2%', margin=dict(l=140, r=20, t=20, b=50), legend_title_text='', font=dict(size=26), xaxis=dict(title="", tickfont=dict(size=26)), yaxis=dict(title="", tickfont=dict(size=26)), legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), paper_bgcolor='white', plot_bgcolor='white')
-                                fig_bar_pdf.write_image(f_bar, format="png", engine="kaleido", width=1400, height=650, scale=2)
-                                
-                                img_w = 277 
-                                x_pos = 10
-                                pdf.image(f_bar, x=x_pos, w=img_w)
-                            os.remove(f_bar)
+                            fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
+                                                 color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
+                            fig_bar_pdf.update_layout(
+                                template="plotly_white",
+                                yaxis_tickformat='.2%', 
+                                margin=dict(l=140, r=20, t=20, b=50), 
+                                legend_title_text='',
+                                font=dict(size=26), 
+                                xaxis=dict(title="", tickfont=dict(size=26)),
+                                yaxis=dict(title="", tickfont=dict(size=26)),
+                                legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                paper_bgcolor='rgba(255,255,255,1)',
+                                plot_bgcolor='rgba(255,255,255,1)'
+                            )
+                            f_bar_jpg = save_plotly_as_jpg(fig_bar_pdf, 1400, 650)
+                            
+                            img_w = 277 
+                            x_pos = 10
+                            pdf.image(f_bar_jpg, x=x_pos, w=img_w)
+                            os.remove(f_bar_jpg)
                         except Exception as e:
                             pdf.set_font("Arial", "", 12)
                             pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
@@ -735,10 +774,11 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     if inc_risk:
                         pdf.add_page(orientation='L')
                         
-                        pdf.set_font("Arial", "B", 22) 
+                        pdf.set_font("Arial", "B", 26) 
                         pdf.cell(0, 10, "Risk Summary", ln=True, align="L")
                         pdf.ln(5)
                         
+                        # Boxes exactly fitting 5 metrics
                         r_box_w = 38 
                         spacing = 4
                         total_r_w = (r_box_w * 5) + (spacing * 4)
@@ -749,7 +789,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             ("Weighted Beta", f"{w_beta:.2f}"),
                             ("Weighted Sharpe", f"{w_sharpe:.2f}"),
                             ("Weighted Std Dev", f"{w_stddev:.2%}"),
-                            ("Dividend Yield", f"{w_yield / 100.0:.2%}")
+                            ("Dividend Yield", f"{w_yield:.2%}")
                         ]
                         
                         y_boxes_start = pdf.get_y()
@@ -770,21 +810,25 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             pdf.set_y(y_boxes_start) 
                             
                         pdf.set_y(y_boxes_start + 18)
-                        pdf.ln(2) 
+                        pdf.ln(2) # Flush padding
 
                         if fig_corr is not None:
                             try:
-                                fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
+                                fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
+                                                         zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
+                                # Expanded margins, shrunk fonts to prevent any axis label overlap
                                 fig_corr_pdf.update_layout(
+                                    template="plotly_white",
                                     margin=dict(l=100, r=20, t=10, b=100), 
-                                    font=dict(size=16), 
-                                    xaxis_tickangle=-45, 
-                                    paper_bgcolor='white', 
-                                    plot_bgcolor='white'
+                                    font=dict(size=12),
+                                    xaxis_tickangle=-45,
+                                    paper_bgcolor='rgba(255,255,255,1)',
+                                    plot_bgcolor='rgba(255,255,255,1)'
                                 )
-                                f_corr_jpg = save_plotly_as_jpg(fig_corr_pdf, 1500, 650)
+                                f_corr_jpg = save_plotly_as_jpg(fig_corr_pdf, 1100, 500)
                                 
-                                img_w = 265
+                                # Massive 240mm width centered
+                                img_w = 240
                                 x_pos = (297 - img_w) / 2
                                 current_y = pdf.get_y()
                                 pdf.image(f_corr_jpg, x=x_pos, y=current_y, w=img_w)
