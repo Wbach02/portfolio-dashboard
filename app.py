@@ -148,6 +148,18 @@ def apply_color_logic(val):
     elif val < -0.02: return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;'
     else: return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;'
 
+def save_plotly_as_jpg(fig, width, height):
+    """Saves a Plotly figure to a flat JPEG, destroying the alpha layer that turns black in FPDF."""
+    tmp_png = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+    tmp_jpg = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+    fig.write_image(tmp_png, format="png", engine="kaleido", width=width, height=height, scale=2)
+    img = Image.open(tmp_png).convert("RGBA")
+    bg = Image.new("RGB", img.size, (255, 255, 255))
+    bg.paste(img, mask=img.split()[3])
+    bg.save(tmp_jpg, format="JPEG")
+    os.remove(tmp_png)
+    return tmp_jpg
+
 # --- SECTION 1: ADD POSITIONS ---
 st.header("1. Add Positions")
 col_upload, col_manual = st.columns(2)
@@ -399,11 +411,11 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         
         with col_metrics:
             st.markdown("**Risk Summary**")
-            st.metric("Weighted Alpha", f"{w_alpha:.4f}")
-            st.metric("Weighted Beta", f"{w_beta:.2f}")
-            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}")
-            st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}")
-            st.metric("Weighted Dividend Yield", f"{w_yield:.2%}")
+            st.metric("Weighted Alpha", f"{w_alpha:.4f}", help="Excess return of the portfolio relative to the benchmark. Positive alpha means outperformance.")
+            st.metric("Weighted Beta", f"{w_beta:.2f}", help="Volatility relative to the benchmark. < 1.0 is less volatile, > 1.0 is more volatile.")
+            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}", help="Risk-adjusted return. How much excess return is received for the extra volatility. Higher is better.")
+            st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}", help="Absolute volatility/risk over the period.")
+            st.metric("Weighted Dividend Yield", f"{w_yield / 100.0:.2%}", help="The weighted average trailing 12-month dividend yield of the portfolio.")
 
         with col_matrix:
             st.markdown("**Position Correlation Matrix**")
@@ -519,13 +531,19 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            # Reverting to the functional Kaleido PNG export method
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_pie_file:
-                                f_pie = f_pie_file.name
-                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
-                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
-                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
-                                fig_pie_pdf.write_image(f_pie, format="png", engine="kaleido", width=800, height=800, scale=2)
+                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
+                            fig_pie_pdf.update_traces(
+                                textposition='inside', 
+                                textinfo='percent+label', 
+                                textfont_size=24
+                            )
+                            fig_pie_pdf.update_layout(
+                                showlegend=False, 
+                                margin=dict(t=10, b=10, l=10, r=10),
+                                paper_bgcolor='white',
+                                plot_bgcolor='white'
+                            )
+                            f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
                         except Exception:
                             pass
 
@@ -727,7 +745,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             ("Weighted Beta", f"{w_beta:.2f}"),
                             ("Weighted Sharpe", f"{w_sharpe:.2f}"),
                             ("Weighted Std Dev", f"{w_stddev:.2%}"),
-                            ("Dividend Yield", f"{w_yield:.2%}")
+                            ("Dividend Yield", f"{w_yield / 100.0:.2%}")
                         ]
                         
                         y_boxes_start = pdf.get_y()
@@ -748,21 +766,25 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             pdf.set_y(y_boxes_start) 
                             
                         pdf.set_y(y_boxes_start + 18)
-                        pdf.ln(2) # Flush padding
+                        pdf.ln(2) 
 
                         if fig_corr is not None:
                             try:
-                                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr_file:
-                                    f_corr = f_corr_file.name
-                                    fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                    fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=12), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
-                                    fig_corr_pdf.write_image(f_corr, format="png", engine="kaleido", width=1100, height=500, scale=2)
-                                    
-                                    img_w = 240
-                                    x_pos = (297 - img_w) / 2
-                                    current_y = pdf.get_y()
-                                    pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
-                                os.remove(f_corr)
+                                fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
+                                fig_corr_pdf.update_layout(
+                                    margin=dict(l=100, r=20, t=10, b=100), 
+                                    font=dict(size=16), 
+                                    xaxis_tickangle=-45, 
+                                    paper_bgcolor='white', 
+                                    plot_bgcolor='white'
+                                )
+                                f_corr_jpg = save_plotly_as_jpg(fig_corr_pdf, 1500, 700)
+                                
+                                img_w = 265
+                                x_pos = (297 - img_w) / 2
+                                current_y = pdf.get_y()
+                                pdf.image(f_corr_jpg, x=x_pos, y=current_y, w=img_w)
+                                os.remove(f_corr_jpg)
                             except Exception as e:
                                 pdf.set_font("Arial", "", 12)
                                 pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
