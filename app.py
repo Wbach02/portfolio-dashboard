@@ -148,6 +148,18 @@ def apply_color_logic(val):
     elif val < -0.02: return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;'
     else: return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;'
 
+def save_plotly_as_jpg(fig, width, height):
+    """Saves a Plotly figure to a flat JPEG, destroying the alpha layer that turns black in FPDF."""
+    tmp_png = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+    tmp_jpg = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
+    fig.write_image(tmp_png, format="png", engine="kaleido", width=width, height=height, scale=2)
+    img = Image.open(tmp_png).convert("RGBA")
+    bg = Image.new("RGB", img.size, (255, 255, 255))
+    bg.paste(img, mask=img.split()[3])
+    bg.save(tmp_jpg, format="JPEG")
+    os.remove(tmp_png)
+    return tmp_jpg
+
 # --- SECTION 1: ADD POSITIONS ---
 st.header("1. Add Positions")
 col_upload, col_manual = st.columns(2)
@@ -281,6 +293,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
     calc_df = res.dropna(subset=['Ticker Return', 'Benchmark Return']).copy()
     
     if not calc_df.empty:
+        
+        calc_df = calc_df.sort_values(by='Amount', ascending=False).reset_index(drop=True)
         
         display_cols = ["Security Name", "Type", "Sector", "Ticker", "Benchmark", "Amount", "Purchase Date", "Ticker Return", "Benchmark Return", "Difference"]
         table_df = calc_df[display_cols].copy()
@@ -522,13 +536,10 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            # Using JPG export to inherently flatten alpha channel and prevent black rendering bug
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f_pie_file:
-                                f_pie = f_pie_file.name
-                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
-                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
-                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
-                                fig_pie_pdf.write_image(f_pie, format="jpg", engine="kaleido", width=800, height=800, scale=2)
+                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
+                            fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
+                            fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
+                            f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
                         except Exception:
                             pass
 
@@ -679,12 +690,21 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                 elif col == 'Difference':
                                     diff = row['Difference']
                                     pdf.set_font("Arial", "B", 12)
-                                    if diff > 0.02: pdf.set_text_color(44, 160, 44) 
-                                    elif diff < -0.02: pdf.set_text_color(214, 39, 40)
-                                    else: pdf.set_text_color(127, 127, 127) 
+                                    if diff > 0.02: 
+                                        pdf.set_text_color(21, 87, 36)
+                                        pdf.set_fill_color(212, 237, 218)
+                                        pdf.rect(x_curr, y_start, w, row_height, 'DF')
+                                    elif diff < -0.02: 
+                                        pdf.set_text_color(114, 28, 36)
+                                        pdf.set_fill_color(248, 215, 218)
+                                        pdf.rect(x_curr, y_start, w, row_height, 'DF')
+                                    else: 
+                                        pdf.set_text_color(127, 127, 127) 
                                     pdf.cell(w, row_height, f"{diff:.2%}", align='R')
                                     pdf.set_text_color(0, 0, 0)
                                     pdf.set_font("Arial", "", 12)
+                                    if fill_row: pdf.set_fill_color(242, 248, 242) 
+                                    else: pdf.set_fill_color(255, 255, 255)
                                 x_curr += w
                             
                             pdf.set_y(y_start + row_height)
@@ -755,16 +775,14 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
 
                         if fig_corr is not None:
                             try:
-                                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr_file:
-                                    f_corr = f_corr_file.name
-                                    fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                    fig_corr_pdf.update_layout(margin=dict(l=80, r=20, t=10, b=80), font=dict(size=16), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
-                                    fig_corr_pdf.write_image(f_corr, format="png", engine="kaleido", width=1400, height=600, scale=2)
-                                    
-                                    img_w = 265
-                                    x_pos = (297 - img_w) / 2
-                                    current_y = pdf.get_y()
-                                    pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
+                                fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
+                                fig_corr_pdf.update_layout(margin=dict(l=80, r=20, t=10, b=80), font=dict(size=16), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
+                                f_corr = save_plotly_as_jpg(fig_corr_pdf, 1500, 750)
+                                
+                                img_w = 265
+                                x_pos = (297 - img_w) / 2
+                                current_y = pdf.get_y()
+                                pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
                                 os.remove(f_corr)
                             except Exception as e:
                                 pdf.set_font("Arial", "", 12)
