@@ -532,17 +532,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         f_pie = None
                         try:
                             fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
-                            fig_pie_pdf.update_traces(
-                                textposition='inside', 
-                                textinfo='percent+label', 
-                                textfont_size=24
-                            )
-                            fig_pie_pdf.update_layout(
-                                showlegend=False, 
-                                margin=dict(t=10, b=10, l=10, r=10),
-                                paper_bgcolor='white',
-                                plot_bgcolor='white'
-                            )
+                            fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
+                            fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
                             f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
                         except Exception:
                             pass
@@ -771,20 +762,14 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         if fig_corr is not None:
                             try:
                                 fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                fig_corr_pdf.update_layout(
-                                    margin=dict(l=100, r=20, t=10, b=100), 
-                                    font=dict(size=16), 
-                                    xaxis_tickangle=-45, 
-                                    paper_bgcolor='white', 
-                                    plot_bgcolor='white'
-                                )
-                                f_corr_jpg = save_plotly_as_jpg(fig_corr_pdf, 1500, 700)
+                                fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=16), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
+                                f_corr = save_plotly_as_jpg(fig_corr_pdf, 1500, 700)
                                 
                                 img_w = 265
                                 x_pos = (297 - img_w) / 2
                                 current_y = pdf.get_y()
-                                pdf.image(f_corr_jpg, x=x_pos, y=current_y, w=img_w)
-                                os.remove(f_corr_jpg)
+                                pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
+                                os.remove(f_corr)
                             except Exception as e:
                                 pdf.set_font("Arial", "", 12)
                                 pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
