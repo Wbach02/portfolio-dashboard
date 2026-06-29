@@ -148,18 +148,6 @@ def apply_color_logic(val):
     elif val < -0.02: return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;'
     else: return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;'
 
-def save_plotly_as_jpg(fig, width, height):
-    """Saves a Plotly figure to a flat JPEG, destroying the alpha layer that turns black in FPDF."""
-    tmp_png = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
-    tmp_jpg = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
-    fig.write_image(tmp_png, format="png", engine="kaleido", width=width, height=height, scale=2)
-    img = Image.open(tmp_png).convert("RGBA")
-    bg = Image.new("RGB", img.size, (255, 255, 255))
-    bg.paste(img, mask=img.split()[3])
-    bg.save(tmp_jpg, format="JPEG")
-    os.remove(tmp_png)
-    return tmp_jpg
-
 # --- SECTION 1: ADD POSITIONS ---
 st.header("1. Add Positions")
 col_upload, col_manual = st.columns(2)
@@ -175,7 +163,10 @@ with col_upload:
                 'Security Type': 'Type',
                 'Security Identifier': 'Ticker',
                 'Market Value': 'Amount',
-                'Trade Date': 'Purchase Date'
+                'Trade Date': 'Purchase Date',
+                'Asset Category': 'Sector',
+                'Current Yield': 'Yield',
+                'Yield': 'Yield'
             }
             
             existing_cols = [col for col in column_mapping.keys() if col in df.columns]
@@ -531,19 +522,13 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
-                            fig_pie_pdf.update_traces(
-                                textposition='inside', 
-                                textinfo='percent+label', 
-                                textfont_size=24
-                            )
-                            fig_pie_pdf.update_layout(
-                                showlegend=False, 
-                                margin=dict(t=10, b=10, l=10, r=10),
-                                paper_bgcolor='white',
-                                plot_bgcolor='white'
-                            )
-                            f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
+                            # Using JPG export to inherently flatten alpha channel and prevent black rendering bug
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f_pie_file:
+                                f_pie = f_pie_file.name
+                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
+                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
+                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
+                                fig_pie_pdf.write_image(f_pie, format="jpg", engine="kaleido", width=800, height=800, scale=2)
                         except Exception:
                             pass
 
@@ -770,21 +755,17 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
 
                         if fig_corr is not None:
                             try:
-                                fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                fig_corr_pdf.update_layout(
-                                    margin=dict(l=100, r=20, t=10, b=100), 
-                                    font=dict(size=16), 
-                                    xaxis_tickangle=-45, 
-                                    paper_bgcolor='white', 
-                                    plot_bgcolor='white'
-                                )
-                                f_corr_jpg = save_plotly_as_jpg(fig_corr_pdf, 1500, 700)
-                                
-                                img_w = 265
-                                x_pos = (297 - img_w) / 2
-                                current_y = pdf.get_y()
-                                pdf.image(f_corr_jpg, x=x_pos, y=current_y, w=img_w)
-                                os.remove(f_corr_jpg)
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr_file:
+                                    f_corr = f_corr_file.name
+                                    fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
+                                    fig_corr_pdf.update_layout(margin=dict(l=80, r=20, t=10, b=80), font=dict(size=16), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
+                                    fig_corr_pdf.write_image(f_corr, format="png", engine="kaleido", width=1400, height=600, scale=2)
+                                    
+                                    img_w = 265
+                                    x_pos = (297 - img_w) / 2
+                                    current_y = pdf.get_y()
+                                    pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
+                                os.remove(f_corr)
                             except Exception as e:
                                 pdf.set_font("Arial", "", 12)
                                 pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
