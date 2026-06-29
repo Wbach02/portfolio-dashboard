@@ -294,8 +294,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
     
     if not calc_df.empty:
         
-        calc_df = calc_df.sort_values(by='Amount', ascending=False).reset_index(drop=True)
-        
         display_cols = ["Security Name", "Type", "Sector", "Ticker", "Benchmark", "Amount", "Purchase Date", "Ticker Return", "Benchmark Return", "Difference"]
         table_df = calc_df[display_cols].copy()
         table_df['Purchase Date'] = pd.to_datetime(table_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
@@ -776,8 +774,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         if fig_corr is not None:
                             try:
                                 fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                fig_corr_pdf.update_layout(margin=dict(l=80, r=20, t=10, b=80), font=dict(size=16), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
-                                f_corr = save_plotly_as_jpg(fig_corr_pdf, 1500, 750)
+                                fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=16), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
+                                f_corr = save_plotly_as_jpg(fig_corr_pdf, 1500, 700)
                                 
                                 img_w = 265
                                 x_pos = (297 - img_w) / 2
