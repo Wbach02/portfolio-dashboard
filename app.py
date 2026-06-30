@@ -31,8 +31,8 @@ else:
 
 def get_benchmark(ticker):
     commodities = ['GLD', 'SLV', 'PDBC', 'IAU']
-    intl_emerging = ['EEM', 'VWO', 'EPI', 'EFEIX']
-    intl_developed = ['EFA', 'VEA', 'SHLD', 'CGW', 'BAESY', 'VEU', 'EFV']
+    intl_emerging = ['EEM', 'VWO', 'EPI', 'EFEIX', 'EELV']
+    intl_developed = ['EFA', 'VEA', 'SHLD', 'CGW', 'BAESY', 'VEU', 'EFV', 'FNORX', 'EUAD']
     
     ticker_upper = str(ticker).upper()
     if ticker_upper in commodities: return 'AGG'
@@ -175,10 +175,7 @@ with col_upload:
                 'Security Type': 'Type',
                 'Security Identifier': 'Ticker',
                 'Market Value': 'Amount',
-                'Trade Date': 'Purchase Date',
-                'Asset Category': 'Sector',
-                'Current Yield': 'Yield',
-                'Yield': 'Yield'
+                'Trade Date': 'Purchase Date'
             }
             
             existing_cols = [col for col in column_mapping.keys() if col in df.columns]
@@ -211,8 +208,7 @@ with col_upload:
                 df['Purchase Date'] = pd.to_datetime(df['Purchase Date'], errors='coerce')
                 df = df.dropna(subset=["Purchase Date"]) 
                 
-                df = df.sort_values('Purchase Date')
-                df = df.groupby(['Security Name', 'Type', 'Sector', 'Ticker'], as_index=False).agg({'Amount': 'sum', 'Purchase Date': 'first', 'Yield': 'first'})
+                df = df.groupby(['Security Name', 'Type', 'Sector', 'Yield', 'Ticker'], as_index=False).agg({'Amount': 'sum', 'Purchase Date': 'min'})
                 df['Benchmark'] = df['Ticker'].apply(get_benchmark)
                 
                 st.session_state.portfolio = pd.concat([st.session_state.portfolio, df], ignore_index=True)
@@ -320,7 +316,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
-        excess_value = total_value * weighted_diff
+        original_invested_capital = (calc_df['Amount'] / (1 + calc_df['Ticker Return'])).sum()
+        excess_value = original_invested_capital * weighted_diff
         excess_str = f"+${excess_value:,.2f}" if excess_value >= 0 else f"-${abs(excess_value):,.2f}"
         
         if port_weighted_return >= bench_weighted_return:
@@ -535,10 +532,12 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector', color_discrete_sequence=px.colors.qualitative.Plotly)
-                            fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
-                            fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
-                            f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f_pie_file:
+                                f_pie = f_pie_file.name
+                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector', color_discrete_sequence=px.colors.qualitative.Plotly)
+                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24, marker=dict(line=dict(color='#FFFFFF', width=2)))
+                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='rgba(255,255,255,1)', plot_bgcolor='rgba(255,255,255,1)')
+                                fig_pie_pdf.write_image(f_pie, format="jpg", engine="kaleido", width=800, height=800, scale=2)
                         except Exception:
                             pass
 
@@ -634,7 +633,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         draw_table_headers()
                         
                         fill_row = False 
-                        for idx, row in calc_df.iterrows():
+                        for idx, row in calc_df.sort_values(by='Amount', ascending=False).iterrows():
                             if fill_row: pdf.set_fill_color(242, 248, 242) 
                             else: pdf.set_fill_color(255, 255, 255)
                                 
@@ -774,14 +773,16 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
 
                         if fig_corr is not None:
                             try:
-                                fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                fig_corr_pdf.update_layout(margin=dict(l=80, r=20, t=10, b=80), font=dict(size=18), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
-                                f_corr = save_plotly_as_jpg(fig_corr_pdf, 1800, 800)
-                                
-                                img_w = 260
-                                x_pos = (297 - img_w) / 2
-                                current_y = pdf.get_y()
-                                pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f_corr_file:
+                                    f_corr = f_corr_file.name
+                                    fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
+                                    fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=14), xaxis_tickangle=-45, paper_bgcolor='rgba(255,255,255,1)', plot_bgcolor='rgba(255,255,255,1)')
+                                    fig_corr_pdf.write_image(f_corr, format="jpg", engine="kaleido", width=1200, height=600, scale=2)
+                                    
+                                    img_w = 260
+                                    x_pos = (297 - img_w) / 2
+                                    current_y = pdf.get_y()
+                                    pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
                                 os.remove(f_corr)
                             except Exception as e:
                                 pdf.set_font("Arial", "", 12)
