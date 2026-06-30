@@ -15,7 +15,7 @@ st.title("Portfolio Performance Dashboard")
 
 # Initialize session state (Cleaned up: Removed custom Delete column)
 if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = pd.DataFrame(columns=["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Purchase Date", "Benchmark"])
+    st.session_state.portfolio = pd.DataFrame(columns=["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Total Cost", "Purchase Date", "Benchmark"])
 else:
     # Ensure legacy session states get updated
     if "Delete" in st.session_state.portfolio.columns:
@@ -28,17 +28,19 @@ else:
         st.session_state.portfolio.insert(2, "Sector", "Unknown")
     if "Yield" not in st.session_state.portfolio.columns:
         st.session_state.portfolio.insert(3, "Yield", 0.0)
+    if "Total Cost" not in st.session_state.portfolio.columns:
+        st.session_state.portfolio.insert(6, "Total Cost", 0.0)
 
 def get_benchmark(ticker):
     commodities = ['GLD', 'SLV', 'PDBC', 'IAU']
-    intl_emerging = ['EEM', 'VWO', 'EPI', 'EFEIX', 'EELV']
-    intl_developed = ['EFA', 'VEA', 'SHLD', 'CGW', 'BAESY', 'VEU', 'EFV', 'FNORX', 'EUAD']
+    intl_emerging = ['EEM', 'VWO', 'EPI', 'EFEIX']
+    intl_developed = ['EFA', 'VEA', 'SHLD', 'CGW', 'BAESY', 'VEU', 'EFV']
     
     ticker_upper = str(ticker).upper()
     if ticker_upper in commodities: return 'AGG'
     elif ticker_upper in intl_emerging: return 'EEM'
     elif ticker_upper in intl_developed: return 'EFA'
-    else: return 'SPY' 
+    else: return 'SPY'
 
 def standardize_type(raw_type):
     t_upper = str(raw_type).upper()
@@ -72,7 +74,7 @@ def standardize_sector(sector, ticker):
         "Communication Services": "Communication",
         "Commodities Focused": "Commodities",
         "Energy Limited Partnership": "Energy",
-        "Consumer Defensive": "Consumer Cyclical" 
+        "Consumer Defensive": "Consumer Cyclical"
     }
     return mapping.get(sector, str(sector))
 
@@ -148,18 +150,6 @@ def apply_color_logic(val):
     elif val < -0.02: return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;'
     else: return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;'
 
-def save_plotly_as_jpg(fig, width, height):
-    """Saves a Plotly figure to a flat JPEG, destroying the alpha layer that turns black in FPDF."""
-    tmp_png = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
-    tmp_jpg = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
-    fig.write_image(tmp_png, format="png", engine="kaleido", width=width, height=height, scale=2)
-    img = Image.open(tmp_png).convert("RGBA")
-    bg = Image.new("RGB", img.size, (255, 255, 255))
-    bg.paste(img, mask=img.split()[3])
-    bg.save(tmp_jpg, format="JPEG")
-    os.remove(tmp_png)
-    return tmp_jpg
-
 # --- SECTION 1: ADD POSITIONS ---
 st.header("1. Add Positions")
 col_upload, col_manual = st.columns(2)
@@ -175,6 +165,9 @@ with col_upload:
                 'Security Type': 'Type',
                 'Security Identifier': 'Ticker',
                 'Market Value': 'Amount',
+                'Total Cost': 'Total Cost',
+                'Original Cost': 'Total Cost',
+                'Cost Basis': 'Total Cost',
                 'Trade Date': 'Purchase Date'
             }
             
@@ -187,28 +180,34 @@ with col_upload:
                 unique_tickers = df['Ticker'].dropna().unique()
                 details_dict = {t: fetch_security_details(t) for t in unique_tickers}
                 
-                if 'Security Name' not in df.columns: 
+                if 'Security Name' not in df.columns:
                     df['Security Name'] = df['Ticker'].map(lambda x: details_dict.get(x, (x, '', '', 0.0))[0])
-                if 'Type' not in df.columns: 
+                if 'Type' not in df.columns:
                     df['Type'] = df['Ticker'].map(lambda x: details_dict.get(x, ('', 'Unknown', '', 0.0))[1])
-                if 'Sector' not in df.columns: 
+                if 'Sector' not in df.columns:
                     df['Sector'] = df['Ticker'].map(lambda x: details_dict.get(x, ('', '', 'Other', 0.0))[2])
-                if 'Yield' not in df.columns: 
+                if 'Yield' not in df.columns:
                     df['Yield'] = df['Ticker'].map(lambda x: details_dict.get(x, ('', '', '', 0.0))[3])
+                if 'Total Cost' not in df.columns:
+                    df['Total Cost'] = 0.0
                 
                 df['Type'] = df['Type'].apply(standardize_type)
                 df['Sector'] = df.apply(lambda row: standardize_sector(row['Sector'], row['Ticker']), axis=1)
                 
-                df = df[["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Purchase Date"]].dropna(subset=["Ticker"])
+                df = df[["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Total Cost", "Purchase Date"]].dropna(subset=["Ticker"])
                 
                 if df['Amount'].dtype == 'object':
                     df['Amount'] = df['Amount'].astype(str).str.replace(',', '').str.replace('$', '')
                 df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
                 
-                df['Purchase Date'] = pd.to_datetime(df['Purchase Date'], errors='coerce')
-                df = df.dropna(subset=["Purchase Date"]) 
+                if df['Total Cost'].dtype == 'object':
+                    df['Total Cost'] = df['Total Cost'].astype(str).str.replace(',', '').str.replace('$', '')
+                df['Total Cost'] = pd.to_numeric(df['Total Cost'], errors='coerce').fillna(0)
                 
-                df = df.groupby(['Security Name', 'Type', 'Sector', 'Yield', 'Ticker'], as_index=False).agg({'Amount': 'sum', 'Purchase Date': 'min'})
+                df['Purchase Date'] = pd.to_datetime(df['Purchase Date'], errors='coerce')
+                df = df.dropna(subset=["Purchase Date"])
+                
+                df = df.groupby(['Security Name', 'Type', 'Sector', 'Yield', 'Ticker'], as_index=False).agg({'Amount': 'sum', 'Total Cost': 'sum', 'Purchase Date': 'min'})
                 df['Benchmark'] = df['Ticker'].apply(get_benchmark)
                 
                 st.session_state.portfolio = pd.concat([st.session_state.portfolio, df], ignore_index=True)
@@ -220,13 +219,14 @@ with col_manual:
     with st.form("add_position_form"):
         new_ticker = st.text_input("Ticker Symbol").upper()
         new_amount = st.number_input("Amount ($)", min_value=0.0, step=100.0)
+        new_cost = st.number_input("Total Cost ($)", min_value=0.0, step=100.0)
         new_date = st.date_input("Date of First Purchase", format="MM/DD/YYYY")
         
         if st.form_submit_button("Add Single Position") and new_ticker:
             name, qtype, sector, div_yield = fetch_security_details(new_ticker)
             new_row = pd.DataFrame({
                 "Security Name": [name], "Type": [qtype], "Sector": [sector], "Yield": [div_yield],
-                "Ticker": [new_ticker], "Amount": [new_amount],
+                "Ticker": [new_ticker], "Amount": [new_amount], "Total Cost": [new_cost],
                 "Purchase Date": [new_date], "Benchmark": [get_benchmark(new_ticker)]
             })
             st.session_state.portfolio = pd.concat([st.session_state.portfolio, new_row], ignore_index=True)
@@ -246,13 +246,14 @@ edited_portfolio = st.data_editor(
         "Sector": st.column_config.TextColumn("Sector", help="The industry category of the asset."),
         "Yield": st.column_config.NumberColumn("Yield", format="%.4f"),
         "Purchase Date": st.column_config.DateColumn("Purchase Date", format="MM/DD/YYYY"),
-        "Amount": st.column_config.NumberColumn("Amount", format="$%.2f")
+        "Amount": st.column_config.NumberColumn("Amount", format="$%.2f"),
+        "Total Cost": st.column_config.NumberColumn("Total Cost", format="$%.2f")
     }
 )
 st.session_state.portfolio = edited_portfolio
 
 if st.button("⚠️ Clear Entire Portfolio"):
-    st.session_state.portfolio = pd.DataFrame(columns=["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Purchase Date", "Benchmark"])
+    st.session_state.portfolio = pd.DataFrame(columns=["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Total Cost", "Purchase Date", "Benchmark"])
     st.rerun()
 
 st.divider()
@@ -290,7 +291,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
     calc_df = res.dropna(subset=['Ticker Return', 'Benchmark Return']).copy()
     
     if not calc_df.empty:
-        
         display_cols = ["Security Name", "Type", "Sector", "Ticker", "Benchmark", "Amount", "Purchase Date", "Ticker Return", "Benchmark Return", "Difference"]
         table_df = calc_df[display_cols].copy()
         table_df['Purchase Date'] = pd.to_datetime(table_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
@@ -316,16 +316,16 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
-        original_invested_capital = (calc_df['Amount'] / (1 + calc_df['Ticker Return'])).sum()
-        excess_value = original_invested_capital * weighted_diff
+        total_cost = calc_df['Total Cost'].sum()
+        excess_value = total_cost * weighted_diff
         excess_str = f"+${excess_value:,.2f}" if excess_value >= 0 else f"-${abs(excess_value):,.2f}"
         
         if port_weighted_return >= bench_weighted_return:
-            port_bg, port_txt = "#d4edda", "#155724" 
-            bench_bg, bench_txt = "#f8d7da", "#721c24" 
+            port_bg, port_txt = "#d4edda", "#155724"
+            bench_bg, bench_txt = "#f8d7da", "#721c24"
         else:
-            port_bg, port_txt = "#f8d7da", "#721c24" 
-            bench_bg, bench_txt = "#d4edda", "#155724" 
+            port_bg, port_txt = "#f8d7da", "#721c24"
+            bench_bg, bench_txt = "#d4edda", "#155724"
 
         col_kpi, col_pie = st.columns([1, 1.2])
         
@@ -371,13 +371,13 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
 
             fig_pie = px.pie(sector_df, values='Amount', names='Sector', hole=0.4, custom_data=['HoverText'])
             fig_pie.update_traces(
-                textposition='inside', 
-                textinfo='percent+label', 
+                textposition='inside',
+                textinfo='percent+label',
                 textfont_size=16,
                 hovertemplate="<b>%{label}</b><br><br>%{customdata[0]}<extra></extra>"
             )
             fig_pie.update_layout(
-                margin=dict(l=20, r=20, t=20, b=20), 
+                margin=dict(l=20, r=20, t=20, b=20),
                 legend=dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5),
                 height=500
             )
@@ -391,8 +391,8 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         fig_bar = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
                          color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
         fig_bar.update_layout(
-            yaxis_tickformat='.2%', 
-            margin=dict(l=80, r=20, t=20, b=40), 
+            yaxis_tickformat='.2%',
+            margin=dict(l=80, r=20, t=20, b=40),
             legend_title_text='',
             font=dict(size=16),
             xaxis=dict(title=""),
@@ -412,11 +412,11 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         
         with col_metrics:
             st.markdown("**Risk Summary**")
-            st.metric("Weighted Alpha", f"{w_alpha:.4f}", help="Excess return of the portfolio relative to the benchmark. Positive alpha means outperformance.")
-            st.metric("Weighted Beta", f"{w_beta:.2f}", help="Volatility relative to the benchmark. < 1.0 is less volatile, > 1.0 is more volatile.")
-            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}", help="Risk-adjusted return. How much excess return is received for the extra volatility. Higher is better.")
-            st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}", help="Absolute volatility/risk over the period.")
-            st.metric("Weighted Dividend Yield", f"{w_yield / 100.0:.2%}", help="The weighted average trailing 12-month dividend yield of the portfolio.")
+            st.metric("Weighted Alpha", f"{w_alpha:.4f}")
+            st.metric("Weighted Beta", f"{w_beta:.2f}")
+            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}")
+            st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}")
+            st.metric("Weighted Dividend Yield", f"{w_yield:.2%}")
 
         with col_matrix:
             st.markdown("**Position Correlation Matrix**")
@@ -432,7 +432,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         returns_df = all_data.pct_change()
                         corr_matrix = returns_df.corr().round(2)
                         
-                        fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", 
+                        fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r",
                                              zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
                         fig_corr.update_layout(margin=dict(l=60, r=20, t=20, b=80), font=dict(size=14))
                         st.plotly_chart(fig_corr, use_container_width=True)
@@ -532,12 +532,13 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f_pie_file:
+                            # Reverting to the functional Kaleido PNG export method
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_pie_file:
                                 f_pie = f_pie_file.name
-                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector', color_discrete_sequence=px.colors.qualitative.Plotly)
-                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24, marker=dict(line=dict(color='#FFFFFF', width=2)))
-                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='rgba(255,255,255,1)', plot_bgcolor='rgba(255,255,255,1)')
-                                fig_pie_pdf.write_image(f_pie, format="jpg", engine="kaleido", width=800, height=800, scale=2)
+                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
+                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
+                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
+                                fig_pie_pdf.write_image(f_pie, format="png", engine="kaleido", width=800, height=800, scale=2)
                         except Exception:
                             pass
 
@@ -633,7 +634,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         draw_table_headers()
                         
                         fill_row = False 
-                        for idx, row in calc_df.sort_values(by='Amount', ascending=False).iterrows():
+                        for idx, row in calc_df.iterrows():
                             if fill_row: pdf.set_fill_color(242, 248, 242) 
                             else: pdf.set_fill_color(255, 255, 255)
                                 
@@ -688,21 +689,12 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                 elif col == 'Difference':
                                     diff = row['Difference']
                                     pdf.set_font("Arial", "B", 12)
-                                    if diff > 0.02: 
-                                        pdf.set_text_color(21, 87, 36)
-                                        pdf.set_fill_color(212, 237, 218)
-                                        pdf.rect(x_curr, y_start, w, row_height, 'DF')
-                                    elif diff < -0.02: 
-                                        pdf.set_text_color(114, 28, 36)
-                                        pdf.set_fill_color(248, 215, 218)
-                                        pdf.rect(x_curr, y_start, w, row_height, 'DF')
-                                    else: 
-                                        pdf.set_text_color(127, 127, 127) 
+                                    if diff > 0.02: pdf.set_text_color(44, 160, 44) 
+                                    elif diff < -0.02: pdf.set_text_color(214, 39, 40)
+                                    else: pdf.set_text_color(127, 127, 127) 
                                     pdf.cell(w, row_height, f"{diff:.2%}", align='R')
                                     pdf.set_text_color(0, 0, 0)
                                     pdf.set_font("Arial", "", 12)
-                                    if fill_row: pdf.set_fill_color(242, 248, 242) 
-                                    else: pdf.set_fill_color(255, 255, 255)
                                 x_curr += w
                             
                             pdf.set_y(y_start + row_height)
@@ -748,7 +740,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             ("Weighted Beta", f"{w_beta:.2f}"),
                             ("Weighted Sharpe", f"{w_sharpe:.2f}"),
                             ("Weighted Std Dev", f"{w_stddev:.2%}"),
-                            ("Dividend Yield", f"{w_yield / 100.0:.2%}")
+                            ("Dividend Yield", f"{w_yield:.2%}")
                         ]
                         
                         y_boxes_start = pdf.get_y()
@@ -769,17 +761,17 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                             pdf.set_y(y_boxes_start) 
                             
                         pdf.set_y(y_boxes_start + 18)
-                        pdf.ln(2) 
+                        pdf.ln(2) # Flush padding
 
                         if fig_corr is not None:
                             try:
-                                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f_corr_file:
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_corr_file:
                                     f_corr = f_corr_file.name
                                     fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                    fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=14), xaxis_tickangle=-45, paper_bgcolor='rgba(255,255,255,1)', plot_bgcolor='rgba(255,255,255,1)')
-                                    fig_corr_pdf.write_image(f_corr, format="jpg", engine="kaleido", width=1200, height=600, scale=2)
+                                    fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=12), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
+                                    fig_corr_pdf.write_image(f_corr, format="png", engine="kaleido", width=1100, height=500, scale=2)
                                     
-                                    img_w = 260
+                                    img_w = 240
                                     x_pos = (297 - img_w) / 2
                                     current_y = pdf.get_y()
                                     pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
@@ -793,7 +785,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
 
                     pdf_output = pdf.output(dest='S')
                     pdf_bytes = pdf_output.encode('latin-1') if isinstance(pdf_output, str) else bytes(pdf_output)
-                    
                     st.success("PDF generated successfully!")
                     st.download_button(
                         label="⬇️ Download Professional PDF Report",
