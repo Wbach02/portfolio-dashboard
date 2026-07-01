@@ -334,6 +334,12 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
     
     if not calc_df.empty:
         
+        # Ensure all strictly numeric columns are strictly typed to prevent object dtype errors like nlargest failures
+        numeric_cols = ['Amount', 'Total Cost', 'Ticker Return', 'Benchmark Return', 'Difference', 'Alpha', 'Beta', 'Sharpe', 'Std Dev', 'Correlation']
+        for col in numeric_cols:
+            if col in calc_df.columns:
+                calc_df[col] = pd.to_numeric(calc_df[col], errors='coerce')
+        
         display_cols = ["Security Name", "Type", "Sector", "Ticker", "Benchmark", "Amount", "Purchase Date", "Ticker Return", "Benchmark Return", "Difference"]
         table_df = calc_df[display_cols].copy()
         table_df['Purchase Date'] = pd.to_datetime(table_df['Purchase Date']).dt.strftime('%m/%d/%Y') + '\u200b'
@@ -617,10 +623,12 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector', color_discrete_sequence=px.colors.qualitative.Plotly)
-                            fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24, marker=dict(line=dict(color='#FFFFFF', width=2)))
-                            fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
-                            f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_pie_file:
+                                f_pie = f_pie_file.name
+                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
+                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
+                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
+                                fig_pie_pdf.write_image(f_pie, format="png", engine="kaleido", width=800, height=800, scale=2)
                         except Exception:
                             pass
 
