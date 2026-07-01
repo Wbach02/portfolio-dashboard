@@ -349,6 +349,48 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             "Type": st.column_config.TextColumn("Type", help="Describes whether the asset is an Equity, ETF, Mutual Fund, etc.")
         })
 
+        # --- SECTION: TOP CONTRIBUTORS & DETRACTORS ---
+        st.write("")
+        st.subheader("Top Contributors and Detractors")
+        
+        calc_df['Excess Value'] = calc_df.get('Total Cost', calc_df['Amount']) * calc_df['Difference']
+        top_contribs = calc_df[calc_df['Excess Value'] > 0].nlargest(3, 'Excess Value')
+        top_detracts = calc_df[calc_df['Excess Value'] < 0].nsmallest(3, 'Excess Value')
+        
+        col_c, col_d = st.columns(2)
+        
+        with col_c:
+            st.markdown('**Top Contributors (Positive Excess Value)**')
+            if not top_contribs.empty:
+                for _, row in top_contribs.iterrows():
+                    st.markdown(f"""
+                    <div style="background-color: rgba(44, 160, 44, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 6px solid #2ca02c;">
+                        <span style="font-size: 1.1em; font-weight: bold; color: #212529;">{row['Ticker']}</span> <span style="color: #495057;">- {row['Security Name']}</span><br>
+                        <div style="margin-top: 5px; font-size: 1.05em;">
+                            Excess Return: <span style="color: #155724; font-weight: bold;">{row['Difference']:.2%}</span> | 
+                            Excess Value: <span style="color: #155724; font-weight: bold;">+${row['Excess Value']:,.2f}</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No positive contributors found.")
+                
+        with col_d:
+            st.markdown('**Top Detractors (Negative Excess Value)**')
+            if not top_detracts.empty:
+                for _, row in top_detracts.iterrows():
+                    st.markdown(f"""
+                    <div style="background-color: rgba(214, 39, 40, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 10px; border-left: 6px solid #d62728;">
+                        <span style="font-size: 1.1em; font-weight: bold; color: #212529;">{row['Ticker']}</span> <span style="color: #495057;">- {row['Security Name']}</span><br>
+                        <div style="margin-top: 5px; font-size: 1.05em;">
+                            Excess Return: <span style="color: #721c24; font-weight: bold;">{row['Difference']:.2%}</span> | 
+                            Excess Value: <span style="color: #721c24; font-weight: bold;">-${abs(row['Excess Value']):,.2f}</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No negative detractors found.")
+
         # --- SECTION 4: VISUAL SUMMARY & METRICS ---
         st.divider()
         st.subheader("📊 Portfolio Summary & Sector Allocation")
@@ -642,6 +684,86 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         if f_pie and os.path.exists(f_pie):
                             pdf.image(f_pie, x=135, y=y_start_summary, w=145)
                             os.remove(f_pie)
+
+                    # --- TOP CONTRIBUTORS & DETRACTORS ---
+                    pdf.add_page(orientation='L')
+                    pdf.set_font("Arial", "B", 26)
+                    pdf.set_text_color(0, 0, 0)
+                    pdf.cell(0, 15, "Top Contributors and Detractors", ln=True, align="L")
+                    pdf.ln(5)
+                    
+                    top_contribs_pdf = calc_df[calc_df['Excess Value'] > 0].nlargest(3, 'Excess Value')
+                    top_detracts_pdf = calc_df[calc_df['Excess Value'] < 0].nsmallest(3, 'Excess Value')
+                    
+                    box_w = 130
+                    x_start_c = 15
+                    x_start_d = 150
+                    
+                    y_start = pdf.get_y()
+                    
+                    # Contributors
+                    pdf.set_xy(x_start_c, y_start)
+                    pdf.set_font("Arial", "B", 16)
+                    pdf.set_text_color(21, 87, 36)
+                    pdf.cell(box_w, 10, "Top Contributors (Positive Excess Value)", ln=False, align="L")
+                    
+                    y_curr_c = y_start + 15
+                    if not top_contribs_pdf.empty:
+                        for _, row in top_contribs_pdf.iterrows():
+                            pdf.set_xy(x_start_c, y_curr_c)
+                            pdf.set_fill_color(242, 248, 242)
+                            pdf.rect(x_start_c, y_curr_c, box_w, 20, 'F')
+                            pdf.set_fill_color(44, 160, 44)
+                            pdf.rect(x_start_c, y_curr_c, 3, 20, 'F')
+                            
+                            pdf.set_xy(x_start_c + 5, y_curr_c + 3)
+                            pdf.set_font("Arial", "B", 12)
+                            pdf.set_text_color(0, 0, 0)
+                            sec_name = str(row.get('Security Name', ''))[:35]
+                            pdf.cell(box_w - 5, 6, f"{row['Ticker']} - {sec_name}", ln=True)
+                            
+                            pdf.set_xy(x_start_c + 5, y_curr_c + 10)
+                            pdf.set_font("Arial", "", 11)
+                            pdf.set_text_color(21, 87, 36)
+                            pdf.cell(box_w - 5, 6, f"Excess Return: {row['Difference']:.2%}  |  Excess Value: +${row['Excess Value']:,.2f}", ln=True)
+                            y_curr_c += 25
+                    else:
+                        pdf.set_xy(x_start_c, y_curr_c)
+                        pdf.set_font("Arial", "I", 12)
+                        pdf.set_text_color(100, 100, 100)
+                        pdf.cell(box_w, 10, "No positive contributors found.", ln=True)
+
+                    # Detractors
+                    pdf.set_xy(x_start_d, y_start)
+                    pdf.set_font("Arial", "B", 16)
+                    pdf.set_text_color(114, 28, 36)
+                    pdf.cell(box_w, 10, "Top Detractors (Negative Excess Value)", ln=False, align="L")
+                    
+                    y_curr_d = y_start + 15
+                    if not top_detracts_pdf.empty:
+                        for _, row in top_detracts_pdf.iterrows():
+                            pdf.set_xy(x_start_d, y_curr_d)
+                            pdf.set_fill_color(253, 242, 242)
+                            pdf.rect(x_start_d, y_curr_d, box_w, 20, 'F')
+                            pdf.set_fill_color(214, 39, 40)
+                            pdf.rect(x_start_d, y_curr_d, 3, 20, 'F')
+                            
+                            pdf.set_xy(x_start_d + 5, y_curr_d + 3)
+                            pdf.set_font("Arial", "B", 12)
+                            pdf.set_text_color(0, 0, 0)
+                            sec_name = str(row.get('Security Name', ''))[:35]
+                            pdf.cell(box_w - 5, 6, f"{row['Ticker']} - {sec_name}", ln=True)
+                            
+                            pdf.set_xy(x_start_d + 5, y_curr_d + 10)
+                            pdf.set_font("Arial", "", 11)
+                            pdf.set_text_color(114, 28, 36)
+                            pdf.cell(box_w - 5, 6, f"Excess Return: {row['Difference']:.2%}  |  Excess Value: -${abs(row['Excess Value']):,.2f}", ln=True)
+                            y_curr_d += 25
+                    else:
+                        pdf.set_xy(x_start_d, y_curr_d)
+                        pdf.set_font("Arial", "I", 12)
+                        pdf.set_text_color(100, 100, 100)
+                        pdf.cell(box_w, 10, "No negative detractors found.", ln=True)
 
                     # --- PAGE 3: PERFORMANCE REPORT HOLDINGS ---
                     if inc_holdings and len(selected_pdf_cols) > 0:
