@@ -623,12 +623,10 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_pie_file:
-                                f_pie = f_pie_file.name
-                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
-                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
-                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
-                                fig_pie_pdf.write_image(f_pie, format="png", engine="kaleido", width=800, height=800, scale=2)
+                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector', color_discrete_sequence=px.colors.qualitative.Plotly)
+                            fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24, marker=dict(line=dict(color='#FFFFFF', width=2)))
+                            fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
+                            f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
                         except Exception:
                             pass
 
