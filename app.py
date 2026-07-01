@@ -455,7 +455,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         
         with col_metrics:
             st.markdown("**Risk Summary**")
-            st.metric("Weighted Alpha", f"{w_alpha:.4f}", help="Excess return of the portfolio relative to the benchmark. Positive alpha means outperformance.")
+            st.metric("Weighted Alpha", f"{w_alpha:.2%}", help="Excess return of the portfolio relative to the benchmark. Positive alpha means outperformance.")
             st.metric("Weighted Beta", f"{w_beta:.2f}", help="Volatility relative to the benchmark. < 1.0 is less volatile, > 1.0 is more volatile.")
             st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}", help="Risk-adjusted return. How much excess return is received for the extra volatility. Higher is better.")
             st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}", help="Absolute volatility/risk over the period.")
@@ -575,12 +575,10 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         
                         f_pie = None
                         try:
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_pie_file:
-                                f_pie = f_pie_file.name
-                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector')
-                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24)
-                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
-                                fig_pie_pdf.write_image(f_pie, format="png", engine="kaleido", width=800, height=800, scale=2)
+                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector', color_discrete_sequence=px.colors.qualitative.Plotly)
+                            fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24, marker=dict(line=dict(color='#FFFFFF', width=2)))
+                            fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
+                            f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
                         except Exception:
                             pass
 
@@ -778,7 +776,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         x_r_start = (297 - total_r_w) / 2
                         
                         m_data = [
-                            ("Weighted Alpha", f"{w_alpha:.4f}"),
+                            ("Weighted Alpha", f"{w_alpha:.2%}"),
                             ("Weighted Beta", f"{w_beta:.2f}"),
                             ("Weighted Sharpe", f"{w_sharpe:.2f}"),
                             ("Weighted Std Dev", f"{w_stddev:.2%}"),
