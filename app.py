@@ -211,7 +211,10 @@ with col_upload:
                 'Security Identifier': 'Ticker',
                 'Market Value': 'Amount',
                 'Original Adjusted Cost': 'Total Cost',
-                'Trade Date': 'Purchase Date'
+                'Trade Date': 'Purchase Date',
+                'Asset Category': 'Sector',
+                'Current Yield': 'Yield',
+                'Yield': 'Yield'
             }
             
             existing_cols = [col for col in column_mapping.keys() if col in df.columns]
@@ -246,6 +249,10 @@ with col_upload:
                 if df['Total Cost'].dtype == 'object':
                     df['Total Cost'] = df['Total Cost'].astype(str).str.replace(',', '').str.replace('$', '')
                 df['Total Cost'] = pd.to_numeric(df['Total Cost'], errors='coerce').fillna(0)
+                
+                if df['Yield'].dtype == 'object':
+                    df['Yield'] = df['Yield'].astype(str).str.replace('%', '').str.replace(',', '')
+                df['Yield'] = pd.to_numeric(df['Yield'], errors='coerce').fillna(0.0)
                 
                 df['Purchase Date'] = pd.to_datetime(df['Purchase Date'], errors='coerce')
                 df = df.dropna(subset=["Purchase Date"]) 
@@ -407,8 +414,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
         weighted_diff = port_weighted_return - bench_weighted_return
         
-        total_cost = calc_df['Total Cost'].sum() if 'Total Cost' in calc_df.columns else total_value
-        excess_value = total_cost * weighted_diff
+        excess_value = calc_df['Excess Value'].sum()
         excess_str = f"+${excess_value:,.2f}" if excess_value >= 0 else f"-${abs(excess_value):,.2f}"
         
         if port_weighted_return >= bench_weighted_return:
@@ -444,7 +450,7 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             
             st.markdown(f"""
             <div style="background-color: {port_bg}; padding: 15px; border-radius: 10px; border: 1px solid {port_txt};">
-                <p style="margin: 0; font-size: 1.1em; color: {port_txt}; font-weight: bold; text-align: center;">Excess Value Created</p>
+                <p style="margin: 0; font-size: 1.1em; color: {port_txt}; font-weight: bold; text-align: center;">Excess Value Created <span title="How much total excess value have my currently held assets generated since I bought each of them?" style="cursor: help; font-size: 0.9em; opacity: 0.8;">&#9432;</span></p>
                 <h1 style="margin: 0; font-size: 2.2em; font-weight: bold; color: {port_txt}; text-align: center;">{excess_str}</h1>
             </div>
             """, unsafe_allow_html=True)
