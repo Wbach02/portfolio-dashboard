@@ -6,6 +6,7 @@ import numpy as np
 from fpdf import FPDF
 import tempfile
 import os
+import time
 import plotly.express as px
 from PIL import Image
 import textwrap
@@ -184,14 +185,30 @@ def apply_excess_color_logic(val):
     else: return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;'
 
 def save_plotly_as_jpg(fig, width, height):
-    """Saves a Plotly figure to a flat JPEG, destroying the alpha layer that turns black in FPDF."""
+    """Saves a Plotly figure to a flat JPEG, with robust retry logic for Kaleido engine crashes."""
     tmp_png = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
     tmp_jpg = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg").name
-    fig.write_image(tmp_png, format="png", engine="kaleido", width=width, height=height, scale=2)
+    
+    success = False
+    last_error = None
+    
+    # Retry loop to catch the intermittent "browser seemed to close immediately" Kaleido crash
+    for attempt in range(3):
+        try:
+            fig.write_image(tmp_png, format="png", width=width, height=height, scale=2)
+            success = True
+            break
+        except Exception as e:
+            last_error = e
+            time.sleep(1.5)
+            
+    if not success:
+        raise last_error
+
     img = Image.open(tmp_png).convert("RGBA")
     bg = Image.new("RGB", img.size, (255, 255, 255))
     bg.paste(img, mask=img.split()[3])
-    bg.save(tmp_jpg, format="JPEG")
+    bg.save(tmp_jpg, format="JPEG", quality=95)
     os.remove(tmp_png)
     return tmp_jpg
 
@@ -882,15 +899,15 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         pdf.cell(0, 15, "Asset vs Benchmark Performance", ln=True, align="L")
                         pdf.ln(5)
                         try:
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as f_bar_file:
-                                f_bar = f_bar_file.name
-                                fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group', color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
-                                fig_bar_pdf.update_layout(yaxis_tickformat='.2%', margin=dict(l=140, r=20, t=20, b=50), legend_title_text='', font=dict(size=26), xaxis=dict(title="", tickfont=dict(size=26)), yaxis=dict(title="", tickfont=dict(size=26)), legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), paper_bgcolor='white', plot_bgcolor='white')
-                                fig_bar_pdf.write_image(f_bar, format="png", engine="kaleido", width=1400, height=650, scale=2)
-                                
-                                img_w = 277 
-                                x_pos = 10
-                                pdf.image(f_bar, x=x_pos, w=img_w)
+                            # Using save_plotly_as_jpg unifies the retry logic and fixes Kaleido crashes
+                            fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group', color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
+                            fig_bar_pdf.update_layout(yaxis_tickformat='.2%', margin=dict(l=140, r=20, t=20, b=50), legend_title_text='', font=dict(size=26), xaxis=dict(title="", tickfont=dict(size=26)), yaxis=dict(title="", tickfont=dict(size=26)), legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), paper_bgcolor='white', plot_bgcolor='white')
+                            
+                            f_bar = save_plotly_as_jpg(fig_bar_pdf, 1400, 650)
+                            
+                            img_w = 277 
+                            x_pos = 10
+                            pdf.image(f_bar, x=x_pos, w=img_w)
                             os.remove(f_bar)
                         except Exception as e:
                             pdf.set_font("Arial", "", 12)
