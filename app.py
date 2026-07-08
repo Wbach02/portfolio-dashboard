@@ -211,10 +211,7 @@ with col_upload:
                 'Security Identifier': 'Ticker',
                 'Market Value': 'Amount',
                 'Original Adjusted Cost': 'Total Cost',
-                'Trade Date': 'Purchase Date',
-                'Asset Category': 'Sector',
-                'Current Yield': 'Yield',
-                'Yield': 'Yield'
+                'Trade Date': 'Purchase Date'
             }
             
             existing_cols = [col for col in column_mapping.keys() if col in df.columns]
@@ -249,10 +246,6 @@ with col_upload:
                 if df['Total Cost'].dtype == 'object':
                     df['Total Cost'] = df['Total Cost'].astype(str).str.replace(',', '').str.replace('$', '')
                 df['Total Cost'] = pd.to_numeric(df['Total Cost'], errors='coerce').fillna(0)
-                
-                if df['Yield'].dtype == 'object':
-                    df['Yield'] = df['Yield'].astype(str).str.replace('%', '').str.replace(',', '')
-                df['Yield'] = pd.to_numeric(df['Yield'], errors='coerce').fillna(0.0)
                 
                 df['Purchase Date'] = pd.to_datetime(df['Purchase Date'], errors='coerce')
                 df = df.dropna(subset=["Purchase Date"]) 
