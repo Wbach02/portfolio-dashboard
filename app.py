@@ -21,6 +21,11 @@ PORTFOLIO_COLS = ["Security Name", "Type", "Sector", "Yield", "Ticker",
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = pd.DataFrame(columns=PORTFOLIO_COLS)
 
+# Per-ticker trade lots {ticker: [{'Purchase Date','Total Cost','Amount'}, ...]}
+# captured from the Excel report so returns respect each lot's own purchase date.
+if 'lots' not in st.session_state:
+    st.session_state.lots = {}
+
 def get_benchmark(ticker):
     commodities = ['GLD', 'SLV', 'PDBC', 'IAU']
     intl_emerging = ['EEM', 'VWO', 'EPI', 'EFEIX', 'EELV']
@@ -94,7 +99,23 @@ def fetch_security_details(ticker):
     except Exception:
         return ticker, 'Unknown', standardize_sector('Other', ticker), 0.0
 
-def fetch_risk_metrics(ticker, benchmark, start_date):
+@st.cache_data(ttl=3600)
+def get_risk_free_rate():
+    """Current US 10-Year Treasury Note yield (^TNX) from Yahoo Finance, returned as a decimal."""
+    try:
+        data = yf.download("^TNX", period="5d", progress=False, auto_adjust=False)
+        if 'Close' not in data:
+            return 0.0
+        series = data['Close'].dropna()
+        if series.empty:
+            return 0.0
+        latest = float(series.iloc[-1])
+        # ^TNX is quoted in percent (e.g. 4.25 = 4.25%); convert to a decimal fraction.
+        return latest / 100.0
+    except Exception:
+        return 0.0
+
+def fetch_risk_metrics(ticker, benchmark, start_date, risk_free_rate=0.0, lots=None):
     try:
         raw_data = yf.download([ticker, benchmark], start=start_date, progress=False, auto_adjust=False)
 
@@ -111,9 +132,42 @@ def fetch_risk_metrics(ticker, benchmark, start_date):
         b_data = data[benchmark].dropna()
         if t_data.empty or b_data.empty: return None
 
-        # Total return from the (earliest) purchase date to today
-        t_ret_total = (t_data.iloc[-1] - t_data.iloc[0]) / t_data.iloc[0]
-        b_ret_total = (b_data.iloc[-1] - b_data.iloc[0]) / b_data.iloc[0]
+        # Total return since purchase (dividend/split adjusted via Adj Close).
+        # When the Excel report has multiple trade lots for this ticker, compute a
+        # COST-WEIGHTED return where each lot is measured from its OWN purchase date,
+        # and value the benchmark as if the same dollars were invested on the same dates.
+        if lots:
+            t_cost_wsum = 0.0
+            b_cost_wsum = 0.0
+            tot_cost = 0.0
+            for lot in lots:
+                try:
+                    c = float(lot.get('Total Cost', 0) or 0)
+                except (TypeError, ValueError):
+                    c = 0.0
+                d = pd.to_datetime(lot.get('Purchase Date'), errors='coerce')
+                if c <= 0 or pd.isna(d):
+                    continue
+                t_lot = t_data.loc[t_data.index >= d]
+                b_lot = b_data.loc[b_data.index >= d]
+                if t_lot.empty or b_lot.empty:
+                    continue
+                r_t = (t_lot.iloc[-1] - t_lot.iloc[0]) / t_lot.iloc[0]
+                r_b = (b_lot.iloc[-1] - b_lot.iloc[0]) / b_lot.iloc[0]
+                t_cost_wsum += c * r_t
+                b_cost_wsum += c * r_b
+                tot_cost += c
+
+            if tot_cost > 0:
+                t_ret_total = t_cost_wsum / tot_cost
+                b_ret_total = b_cost_wsum / tot_cost
+            else:
+                t_ret_total = (t_data.iloc[-1] - t_data.iloc[0]) / t_data.iloc[0]
+                b_ret_total = (b_data.iloc[-1] - b_data.iloc[0]) / b_data.iloc[0]
+        else:
+            # Single-lot / manual entry: measure from the one purchase date.
+            t_ret_total = (t_data.iloc[-1] - t_data.iloc[0]) / t_data.iloc[0]
+            b_ret_total = (b_data.iloc[-1] - b_data.iloc[0]) / b_data.iloc[0]
 
         t_ret_daily = t_data.pct_change().dropna()
         b_ret_daily = b_data.pct_change().dropna()
@@ -128,8 +182,11 @@ def fetch_risk_metrics(ticker, benchmark, start_date):
         cov = t_aligned.cov(b_aligned)
         var = b_aligned.var()
         beta = cov / var if var != 0 else 1.0
-        alpha = (t_aligned.mean() - (beta * b_aligned.mean())) * 252
-        sharpe = (t_aligned.mean() * 252) / std_dev if std_dev != 0 else 0
+        # Jensen's alpha (annualized), risk-free rate included for consistency with Sharpe
+        rf_daily = risk_free_rate / 252.0
+        alpha = ((t_aligned.mean() - rf_daily) - beta * (b_aligned.mean() - rf_daily)) * 252
+        # Annualized Sharpe using the US 10-Year Treasury as the risk-free rate
+        sharpe = ((t_aligned.mean() * 252) - risk_free_rate) / std_dev if std_dev != 0 else 0
 
         return {
             't_ret': t_ret_total, 'b_ret': b_ret_total,
@@ -144,12 +201,6 @@ def apply_color_logic(val):
     if pd.isna(val) or val == "": return ''
     if val > 0.02: return 'background-color: rgba(44, 160, 44, 0.3); font-weight: bold;'
     elif val < -0.02: return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;'
-    else: return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;'
-
-def apply_excess_color_logic(val):
-    if pd.isna(val) or val == "": return ''
-    if val > 0: return 'background-color: rgba(44, 160, 44, 0.3); font-weight: bold;'
-    elif val < 0: return 'background-color: rgba(214, 39, 40, 0.3); font-weight: bold;'
     else: return 'background-color: rgba(127, 127, 127, 0.3); font-weight: bold;'
 
 def save_plotly_as_jpg(fig, width, height):
@@ -249,6 +300,18 @@ with col_upload:
                 # Guarantees each position shows up exactly once, sums every lot's
                 # Amount and Total Cost, and returns the single EARLIEST trade date.
                 df['Ticker'] = df['Ticker'].astype(str).str.strip().str.upper()
+
+                # Preserve each individual trade lot (date + cost) BEFORE consolidating,
+                # so return calculations can weight each lot from its own purchase date.
+                for tkr, grp in df.groupby('Ticker'):
+                    lot_list = st.session_state.lots.setdefault(tkr, [])
+                    for _, r in grp.iterrows():
+                        lot_list.append({
+                            'Purchase Date': pd.to_datetime(r['Purchase Date'], errors='coerce'),
+                            'Total Cost': float(r['Total Cost']) if pd.notna(r['Total Cost']) else 0.0,
+                            'Amount': float(r['Amount']) if pd.notna(r['Amount']) else 0.0,
+                        })
+
                 df = df.groupby('Ticker', as_index=False).agg(
                     **{
                         'Security Name': ('Security Name', 'first'),
@@ -294,6 +357,12 @@ with col_manual:
 
         if st.form_submit_button("Add Single Position") and new_ticker:
             name, qtype, sector, div_yield = fetch_security_details(new_ticker)
+            tkr_norm = str(new_ticker).strip().upper()
+            st.session_state.lots.setdefault(tkr_norm, []).append({
+                'Purchase Date': pd.to_datetime(new_date),
+                'Total Cost': float(new_amount),
+                'Amount': float(new_amount),
+            })
             new_row = pd.DataFrame({
                 "Security Name": [name], "Type": [qtype], "Sector": [sector], "Yield": [div_yield],
                 "Ticker": [new_ticker], "Amount": [new_amount], "Total Cost": [new_amount],
@@ -324,6 +393,7 @@ st.session_state.portfolio = edited_portfolio
 
 if st.button("⚠️ Clear Entire Portfolio"):
     st.session_state.portfolio = pd.DataFrame(columns=PORTFOLIO_COLS)
+    st.session_state.lots = {}
     st.rerun()
 
 st.divider()
@@ -337,10 +407,13 @@ if not st.session_state.portfolio.empty:
         display_df['Purchase Date'] = pd.to_datetime(display_df['Purchase Date'], errors='coerce')
         metrics_list = []
 
+        risk_free_rate = get_risk_free_rate()
+
         with st.spinner('Fetching live market data (Accurately Adjusted for Dividends & Splits)...'):
             for index, row in display_df.iterrows():
                 start_d = row['Purchase Date'].strftime('%Y-%m-%d')
-                metrics = fetch_risk_metrics(row['Ticker'], row['Benchmark'], start_d)
+                lots = st.session_state.lots.get(str(row['Ticker']).strip().upper())
+                metrics = fetch_risk_metrics(row['Ticker'], row['Benchmark'], start_d, risk_free_rate=risk_free_rate, lots=lots)
 
                 if metrics:
                     metrics_list.append({
@@ -434,7 +507,6 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         weights = calc_df['Amount'] / total_value
         port_weighted_return = (calc_df['Ticker Return'] * weights).sum()
         bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
-        weighted_diff = port_weighted_return - bench_weighted_return
 
         excess_value = calc_df['Excess Value'].sum()
         excess_str = f"+${excess_value:,.2f}" if excess_value >= 0 else f"-${abs(excess_value):,.2f}"
@@ -509,12 +581,15 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
 
         fig_bar = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group',
                          color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
+        n_bars_dash = chart_melt['Ticker'].nunique()
+        dash_tick_font = 16 if n_bars_dash <= 15 else 12
+        dash_angle = 0 if n_bars_dash <= 12 else -45
         fig_bar.update_layout(
             yaxis_tickformat='.2%',
             margin=dict(l=80, r=20, t=20, b=40),
             legend_title_text='',
             font=dict(size=16),
-            xaxis=dict(title=""),
+            xaxis=dict(title="", tickfont=dict(size=dash_tick_font), tickangle=dash_angle),
             yaxis=dict(title="")
         )
         st.plotly_chart(fig_bar, use_container_width=True)
@@ -523,19 +598,53 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
 
         w_alpha = (calc_df['Alpha'] * weights).sum()
         w_beta = (calc_df['Beta'] * weights).sum()
-        w_sharpe = (calc_df['Sharpe'] * weights).sum()
-        w_stddev = (calc_df['Std Dev'] * weights).sum()
         w_yield = (calc_df['Yield'] * weights).sum()
+
+        # --- TRUE portfolio-level risk via the covariance matrix (sigma_p = sqrt(wT * Cov * w)).
+        #     This accounts for diversification/correlation between holdings instead of
+        #     just averaging each position's individual volatility. ---
+        rf_rate = get_risk_free_rate()
+        portfolio_returns_df = None            # reused for the correlation matrix below
+        w_stddev = (calc_df['Std Dev'] * weights).sum()   # fallback if the download fails
+        w_sharpe = (calc_df['Sharpe'] * weights).sum()    # fallback if the download fails
+        try:
+            risk_tickers = calc_df['Ticker'].tolist()
+            risk_weights = calc_df.set_index('Ticker')['Amount'] / calc_df['Amount'].sum()
+            risk_min_date = pd.to_datetime(st.session_state.portfolio['Purchase Date'], errors='coerce').min().strftime('%Y-%m-%d')
+            if len(risk_tickers) > 1:
+                raw_px = yf.download(risk_tickers, start=risk_min_date, progress=False, auto_adjust=False)
+                px_data = raw_px['Adj Close'] if 'Adj Close' in raw_px else raw_px['Close']
+                portfolio_returns_df = px_data.pct_change()
+                # Common window where every current holding has data -> weights sum to 1
+                daily = portfolio_returns_df.reindex(columns=risk_tickers).dropna()
+                wv = risk_weights.reindex(risk_tickers).fillna(0.0)
+                if wv.sum() > 0:
+                    wv = wv / wv.sum()
+                if len(daily) >= 2:
+                    cov_annual = daily.cov() * 252
+                    wvec = wv.reindex(cov_annual.columns).fillna(0.0).values
+                    port_var = float(wvec @ cov_annual.values @ wvec)
+                    if port_var > 0:
+                        w_stddev = np.sqrt(port_var)
+                    port_ann_ret = float((daily.mean() * 252).reindex(cov_annual.columns).fillna(0.0).values @ wvec)
+                    w_sharpe = (port_ann_ret - rf_rate) / w_stddev if w_stddev != 0 else 0
+            else:
+                # Single holding: portfolio risk == that position's risk
+                w_stddev = float(calc_df['Std Dev'].iloc[0])
+                w_sharpe = float(calc_df['Sharpe'].iloc[0])
+        except Exception:
+            pass
 
         col_metrics, col_matrix = st.columns([1, 2])
 
         with col_metrics:
             st.markdown("**Risk Summary**")
-            st.metric("Weighted Alpha", f"{w_alpha:.2%}", help="Excess return of the portfolio relative to the benchmark. Positive alpha means outperformance.")
+            st.metric("Weighted Alpha", f"{w_alpha:.2%}", help="Jensen's alpha vs. the benchmark, net of the risk-free rate. Positive means outperformance.")
             st.metric("Weighted Beta", f"{w_beta:.2f}", help="Volatility relative to the benchmark. < 1.0 is less volatile, > 1.0 is more volatile.")
-            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}", help="Risk-adjusted return. How much excess return is received for the extra volatility. Higher is better.")
-            st.metric("Weighted Standard Deviation", f"{w_stddev:.2%}", help="Absolute volatility/risk over the period.")
+            st.metric("Weighted Sharpe Ratio", f"{w_sharpe:.2f}", help="Portfolio-level risk-adjusted return using the covariance matrix and the US 10-Year Treasury (^TNX) as the risk-free rate. Higher is better.")
+            st.metric("Portfolio Standard Deviation", f"{w_stddev:.2%}", help="True portfolio volatility from the covariance matrix (accounts for diversification across holdings), not a simple average of each position's risk.")
             st.metric("Weighted Dividend Yield", f"{w_yield / 100.0:.2%}", help="The weighted average trailing 12-month dividend yield of the portfolio.")
+            st.caption(f"Risk-free rate (US 10-Yr Treasury, ^TNX): {rf_rate:.2%}")
 
         with col_matrix:
             st.markdown("**Position Correlation Matrix**")
@@ -546,10 +655,13 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                 min_date = pd.to_datetime(st.session_state.portfolio['Purchase Date'], errors='coerce').min().strftime('%Y-%m-%d')
                 try:
                     if len(unique_tickers) > 1:
-                        raw_data = yf.download(unique_tickers, start=min_date, progress=False, auto_adjust=False)
-                        all_data = raw_data['Adj Close'] if 'Adj Close' in raw_data else raw_data['Close']
+                        if portfolio_returns_df is not None:
+                            returns_df = portfolio_returns_df
+                        else:
+                            raw_data = yf.download(unique_tickers, start=min_date, progress=False, auto_adjust=False)
+                            all_data = raw_data['Adj Close'] if 'Adj Close' in raw_data else raw_data['Close']
+                            returns_df = all_data.pct_change()
 
-                        returns_df = all_data.pct_change()
                         corr_matrix = returns_df.corr().round(2)
 
                         fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r",
@@ -885,12 +997,15 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                                     pdf.cell(w, row_height, f"{row['Benchmark Return']:.2%}", align='R')
                                 elif col == 'Difference':
                                     diff = row['Difference']
+                                    # Match the dashboard: shade the cell light green / red / grey
+                                    if diff > 0.02: pdf.set_fill_color(192, 226, 192)
+                                    elif diff < -0.02: pdf.set_fill_color(243, 190, 190)
+                                    else: pdf.set_fill_color(217, 217, 217)
+                                    pdf.rect(x_curr, y_start, w, row_height, 'DF')
+                                    pdf.set_xy(x_curr, y_start)
                                     pdf.set_font("Arial", "B", 12)
-                                    if diff > 0.02: pdf.set_text_color(44, 160, 44)
-                                    elif diff < -0.02: pdf.set_text_color(214, 39, 40)
-                                    else: pdf.set_text_color(127, 127, 127)
-                                    pdf.cell(w, row_height, f"{diff:.2%}", align='R')
                                     pdf.set_text_color(0, 0, 0)
+                                    pdf.cell(w, row_height, f"{diff:.2%}", align='R')
                                     pdf.set_font("Arial", "", 12)
                                 x_curr += w
 
@@ -907,7 +1022,13 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         try:
                             # Using save_plotly_as_jpg unifies the retry logic and fixes Kaleido crashes
                             fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group', color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
-                            fig_bar_pdf.update_layout(yaxis_tickformat='.2%', margin=dict(l=140, r=20, t=20, b=50), legend_title_text='', font=dict(size=26), xaxis=dict(title="", tickfont=dict(size=26)), yaxis=dict(title="", tickfont=dict(size=26)), legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), paper_bgcolor='white', plot_bgcolor='white')
+                            # Shrink the ticker labels (not the plot) as the portfolio grows so none get cut off.
+                            n_bars = chart_melt['Ticker'].nunique()
+                            if n_bars <= 12:
+                                bar_tick_font, bar_angle, bar_bottom = 26, 0, 50
+                            else:
+                                bar_tick_font, bar_angle, bar_bottom = max(9, int(340 / n_bars)), -45, 110
+                            fig_bar_pdf.update_layout(yaxis_tickformat='.2%', margin=dict(l=140, r=20, t=20, b=bar_bottom), legend_title_text='', font=dict(size=26), xaxis=dict(title="", tickfont=dict(size=bar_tick_font), tickangle=bar_angle), yaxis=dict(title="", tickfont=dict(size=26)), legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), paper_bgcolor='white', plot_bgcolor='white')
 
                             f_bar = save_plotly_as_jpg(fig_bar_pdf, 1400, 650)
 
@@ -963,7 +1084,9 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                         if fig_corr is not None and corr_matrix is not None:
                             try:
                                 fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=12), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
+                                n_corr = len(corr_matrix.columns)
+                                corr_font = 12 if n_corr <= 12 else max(7, int(180 / n_corr))
+                                fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=corr_font), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
                                 f_corr = save_plotly_as_jpg(fig_corr_pdf, 1100, 500)
 
                                 img_w = 240
