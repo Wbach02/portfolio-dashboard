@@ -7,6 +7,7 @@ from fpdf import FPDF
 import tempfile
 import os
 import time
+import traceback
 import plotly.express as px
 from PIL import Image
 import textwrap
@@ -454,6 +455,10 @@ st.session_state.portfolio = edited_portfolio
 if st.button("⚠️ Clear Entire Portfolio"):
     st.session_state.portfolio = pd.DataFrame(columns=PORTFOLIO_COLS)
     st.session_state.lots = {}
+    # Also drop any stale PDF so the download button disappears on clear.
+    for k in ('pdf_bytes', 'pdf_filename'):
+        if k in st.session_state:
+            del st.session_state[k]
     st.rerun()
 
 st.divider()
@@ -770,193 +775,210 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
             if not client_name:
                 st.warning("Please enter a Client Name.")
             else:
-                with st.spinner("Building Professional PDF..."):
+                try:
+                    with st.spinner("Building Professional PDF..."):
 
-                    class ProfessionalPDF(FPDF):
-                        def __init__(self, logo_path, client_name):
-                            super().__init__(orientation='L', unit='mm', format='A4')
-                            self.logo_path = logo_path
-                            self.client_name = client_name
-                            self.set_auto_page_break(auto=True, margin=15)
+                        class ProfessionalPDF(FPDF):
+                            def __init__(self, logo_path, client_name):
+                                super().__init__(orientation='L', unit='mm', format='A4')
+                                self.logo_path = logo_path
+                                self.client_name = client_name
+                                self.set_auto_page_break(auto=True, margin=15)
 
-                        def header(self):
-                            if self.page_no() > 1:
-                                self.set_font("Arial", "I", 10)
-                                self.set_text_color(150, 150, 150)
-                                self.cell(0, 8, f"Portfolio Performance Report - {self.client_name}", ln=True, align="L")
-                                self.ln(2)
+                            def header(self):
+                                if self.page_no() > 1:
+                                    self.set_font("Arial", "I", 10)
+                                    self.set_text_color(150, 150, 150)
+                                    self.cell(0, 8, f"Portfolio Performance Report - {self.client_name}", ln=True, align="L")
+                                    self.ln(2)
 
-                        def footer(self):
-                            if self.page_no() > 1:
-                                self.set_y(-18)
-                                self.set_font("Arial", "I", 9)
-                                self.set_text_color(150, 150, 150)
-                                self.cell(0, 10, f"Page {self.page_no()}", align="C")
-                                if self.logo_path and os.path.exists(self.logo_path):
-                                    self.image(self.logo_path, x=262, y=182, w=25)
+                            def footer(self):
+                                if self.page_no() > 1:
+                                    self.set_y(-18)
+                                    self.set_font("Arial", "I", 9)
+                                    self.set_text_color(150, 150, 150)
+                                    self.cell(0, 10, f"Page {self.page_no()}", align="C")
+                                    if self.logo_path and os.path.exists(self.logo_path):
+                                        self.image(self.logo_path, x=262, y=182, w=25)
 
-                    logo_path = None
-                    if logo_upload is not None:
-                        try:
-                            img = Image.open(logo_upload).convert("RGB")
-                            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
-                                img.save(tmp_file.name, format="JPEG")
-                                logo_path = tmp_file.name
-                        except Exception:
-                            pass
+                        logo_path = None
+                        if logo_upload is not None:
+                            try:
+                                img = Image.open(logo_upload).convert("RGB")
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+                                    img.save(tmp_file.name, format="JPEG")
+                                    logo_path = tmp_file.name
+                            except Exception:
+                                pass
 
-                    pdf = ProfessionalPDF(logo_path, client_name)
-                    pdf.set_margins(10, 10, 10)
+                        pdf = ProfessionalPDF(logo_path, client_name)
+                        pdf.set_margins(10, 10, 10)
 
-                    # --- PAGE 1: DEDICATED COVER PAGE ---
-                    pdf.add_page()
-                    pdf.ln(50)
-                    pdf.set_font("Arial", "B", 42)
-                    pdf.set_text_color(27, 79, 49)
-                    pdf.cell(0, 15, "Portfolio Performance Report", ln=True, align="C")
+                        # --- PAGE 1: DEDICATED COVER PAGE ---
+                        pdf.add_page()
+                        pdf.ln(50)
+                        pdf.set_font("Arial", "B", 42)
+                        pdf.set_text_color(27, 79, 49)
+                        pdf.cell(0, 15, "Portfolio Performance Report", ln=True, align="C")
 
-                    pdf.ln(15)
-                    pdf.set_font("Arial", "", 24)
-                    pdf.set_text_color(0, 0, 0)
-                    pdf.cell(0, 10, f"Prepared for: {client_name}", ln=True, align="C")
-                    pdf.cell(0, 10, f"Date: {datetime.datetime.now().strftime('%B %d, %Y')}", ln=True, align="C")
+                        pdf.ln(15)
+                        pdf.set_font("Arial", "", 24)
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.cell(0, 10, f"Prepared for: {client_name}", ln=True, align="C")
+                        pdf.cell(0, 10, f"Date: {datetime.datetime.now().strftime('%B %d, %Y')}", ln=True, align="C")
 
-                    if logo_path:
-                        img_w = 90
-                        x_pos = (297 - img_w) / 2
-                        pdf.image(logo_path, x=x_pos, y=140, w=img_w)
+                        if logo_path:
+                            img_w = 90
+                            x_pos = (297 - img_w) / 2
+                            pdf.image(logo_path, x=x_pos, y=140, w=img_w)
 
-                    # --- PAGE 2: PORTFOLIO SUMMARY & PIE CHART ---
-                    if inc_summary:
+                        # --- PAGE 2: PORTFOLIO SUMMARY & PIE CHART ---
+                        if inc_summary:
+                            pdf.add_page(orientation='L')
+                            pdf.set_font("Arial", "B", 26)
+                            pdf.set_text_color(0, 0, 0)
+                            pdf.cell(0, 15, "Portfolio Summary", ln=True, align="L")
+                            pdf.ln(5)
+
+                            f_pie = None
+                            try:
+                                fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector', color_discrete_sequence=px.colors.qualitative.Plotly)
+                                fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24, marker=dict(line=dict(color='#FFFFFF', width=2)))
+                                fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
+                                f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
+                            except Exception:
+                                pass
+
+                            if port_weighted_return >= bench_weighted_return:
+                                p_fill_r, p_fill_g, p_fill_b = 212, 237, 218
+                                p_txt_r, p_txt_g, p_txt_b = 21, 87, 36
+                                b_fill_r, b_fill_g, b_fill_b = 248, 215, 218
+                                b_txt_r, b_txt_g, b_txt_b = 114, 28, 36
+                            else:
+                                p_fill_r, p_fill_g, p_fill_b = 248, 215, 218
+                                p_txt_r, p_txt_g, p_txt_b = 114, 28, 36
+                                b_fill_r, b_fill_g, b_fill_b = 212, 237, 218
+                                b_txt_r, b_txt_g, b_txt_b = 21, 87, 36
+
+                            y_start_summary = pdf.get_y()
+                            pdf.set_x(15)
+                            box_w = 110
+
+                            pdf.set_font("Arial", "B", 14)
+                            pdf.set_fill_color(226, 227, 229)
+                            pdf.set_text_color(56, 61, 65)
+                            pdf.cell(box_w, 10, "Total Portfolio Value", border=1, align="C", fill=True)
+                            pdf.ln()
+                            pdf.set_x(15)
+                            pdf.set_font("Arial", "B", 24)
+                            pdf.cell(box_w, 20, f"${total_value:,.0f}", border=1, align="C", fill=True)
+                            pdf.ln(20)
+
+                            pdf.set_x(15)
+                            pdf.set_font("Arial", "B", 14)
+                            pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b)
+                            pdf.set_text_color(p_txt_r, p_txt_g, p_txt_b)
+                            pdf.cell(box_w, 10, "Weighted Portfolio Return", border=1, align="C", fill=True)
+                            pdf.ln()
+                            pdf.set_x(15)
+                            pdf.set_font("Arial", "B", 28)
+                            pdf.cell(box_w, 22, f"{port_weighted_return:.2%}", border=1, align="C", fill=True)
+                            pdf.ln(20)
+
+                            pdf.set_x(15)
+                            pdf.set_font("Arial", "B", 14)
+                            pdf.set_fill_color(b_fill_r, b_fill_g, b_fill_b)
+                            pdf.set_text_color(b_txt_r, b_txt_g, b_txt_b)
+                            pdf.cell(box_w, 10, "Weighted Benchmark Return", border=1, align="C", fill=True)
+                            pdf.ln()
+                            pdf.set_x(15)
+                            pdf.set_font("Arial", "B", 24)
+                            pdf.cell(box_w, 20, f"{bench_weighted_return:.2%}", border=1, align="C", fill=True)
+                            pdf.ln(20)
+
+                            pdf.set_x(15)
+                            pdf.set_font("Arial", "B", 14)
+                            pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b)
+                            pdf.set_text_color(p_txt_r, p_txt_g, p_txt_b)
+                            pdf.cell(box_w, 10, "Excess Value Created", border=1, align="C", fill=True)
+                            pdf.ln()
+                            pdf.set_x(15)
+                            pdf.set_font("Arial", "B", 24)
+                            pdf.cell(box_w, 20, excess_str, border=1, align="C", fill=True)
+
+                            if f_pie and os.path.exists(f_pie):
+                                pdf.image(f_pie, x=135, y=y_start_summary, w=145)
+                                os.remove(f_pie)
+
+                        # --- TOP CONTRIBUTORS & DETRACTORS ---
                         pdf.add_page(orientation='L')
                         pdf.set_font("Arial", "B", 26)
                         pdf.set_text_color(0, 0, 0)
-                        pdf.cell(0, 15, "Portfolio Summary", ln=True, align="L")
+                        pdf.cell(0, 15, "Top Contributors and Detractors", ln=True, align="L")
                         pdf.ln(5)
 
-                        f_pie = None
-                        try:
-                            fig_pie_pdf = px.pie(sector_df, values='Amount', names='Sector', color_discrete_sequence=px.colors.qualitative.Plotly)
-                            fig_pie_pdf.update_traces(textposition='inside', textinfo='percent+label', textfont_size=24, marker=dict(line=dict(color='#FFFFFF', width=2)))
-                            fig_pie_pdf.update_layout(showlegend=False, margin=dict(t=10, b=10, l=10, r=10), paper_bgcolor='white', plot_bgcolor='white')
-                            f_pie = save_plotly_as_jpg(fig_pie_pdf, 800, 800)
-                        except Exception:
-                            pass
+                        top_contribs_pdf = calc_df[calc_df['Excess Value'] > 0].nlargest(3, 'Excess Value')
+                        top_detracts_pdf = calc_df[calc_df['Excess Value'] < 0].nsmallest(3, 'Excess Value')
 
-                        if port_weighted_return >= bench_weighted_return:
-                            p_fill_r, p_fill_g, p_fill_b = 212, 237, 218
-                            p_txt_r, p_txt_g, p_txt_b = 21, 87, 36
-                            b_fill_r, b_fill_g, b_fill_b = 248, 215, 218
-                            b_txt_r, b_txt_g, b_txt_b = 114, 28, 36
+                        box_w = 130
+                        x_start_c = 15
+                        x_start_d = 150
+
+                        y_start = pdf.get_y()
+
+                        # Contributors
+                        pdf.set_xy(x_start_c, y_start)
+                        pdf.set_font("Arial", "B", 16)
+                        pdf.set_text_color(21, 87, 36)
+                        pdf.cell(box_w, 10, "Top Contributors (Positive Excess Value)", ln=False, align="L")
+
+                        y_curr_c = y_start + 15
+                        if not top_contribs_pdf.empty:
+                            for _, row in top_contribs_pdf.iterrows():
+                                pdf.set_xy(x_start_c, y_curr_c)
+                                pdf.set_fill_color(242, 248, 242)
+                                pdf.rect(x_start_c, y_curr_c, box_w, 20, 'F')
+                                pdf.set_fill_color(44, 160, 44)
+                                pdf.rect(x_start_c, y_curr_c, 3, 20, 'F')
+
+                                pdf.set_xy(x_start_c + 5, y_curr_c + 3)
+                                pdf.set_font("Arial", "B", 12)
+                                pdf.set_text_color(0, 0, 0)
+                                sec_name = str(row.get('Security Name', ''))[:35]
+                                pdf.cell(box_w - 5, 6, f"{row['Ticker']} - {sec_name}", ln=True)
+
+                                pdf.set_xy(x_start_c + 5, y_curr_c + 10)
+                                pdf.set_font("Arial", "", 11)
+                                pdf.set_text_color(21, 87, 36)
+                                pdf.cell(box_w - 5, 6, f"Excess Return: {row['Difference']:.2%}  |  Excess Value: +${row['Excess Value']:,.2f}", ln=True)
+                                y_curr_c += 25
                         else:
-                            p_fill_r, p_fill_g, p_fill_b = 248, 215, 218
-                            p_txt_r, p_txt_g, p_txt_b = 114, 28, 36
-                            b_fill_r, b_fill_g, b_fill_b = 212, 237, 218
-                            b_txt_r, b_txt_g, b_txt_b = 21, 87, 36
-
-                        y_start_summary = pdf.get_y()
-                        pdf.set_x(15)
-                        box_w = 110
-
-                        pdf.set_font("Arial", "B", 14)
-                        pdf.set_fill_color(226, 227, 229)
-                        pdf.set_text_color(56, 61, 65)
-                        pdf.cell(box_w, 10, "Total Portfolio Value", border=1, align="C", fill=True)
-                        pdf.ln()
-                        pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 24)
-                        pdf.cell(box_w, 20, f"${total_value:,.0f}", border=1, align="C", fill=True)
-                        pdf.ln(20)
-
-                        pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 14)
-                        pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b)
-                        pdf.set_text_color(p_txt_r, p_txt_g, p_txt_b)
-                        pdf.cell(box_w, 10, "Weighted Portfolio Return", border=1, align="C", fill=True)
-                        pdf.ln()
-                        pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 28)
-                        pdf.cell(box_w, 22, f"{port_weighted_return:.2%}", border=1, align="C", fill=True)
-                        pdf.ln(20)
-
-                        pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 14)
-                        pdf.set_fill_color(b_fill_r, b_fill_g, b_fill_b)
-                        pdf.set_text_color(b_txt_r, b_txt_g, b_txt_b)
-                        pdf.cell(box_w, 10, "Weighted Benchmark Return", border=1, align="C", fill=True)
-                        pdf.ln()
-                        pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 24)
-                        pdf.cell(box_w, 20, f"{bench_weighted_return:.2%}", border=1, align="C", fill=True)
-                        pdf.ln(20)
-
-                        pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 14)
-                        pdf.set_fill_color(p_fill_r, p_fill_g, p_fill_b)
-                        pdf.set_text_color(p_txt_r, p_txt_g, p_txt_b)
-                        pdf.cell(box_w, 10, "Excess Value Created", border=1, align="C", fill=True)
-                        pdf.ln()
-                        pdf.set_x(15)
-                        pdf.set_font("Arial", "B", 24)
-                        pdf.cell(box_w, 20, excess_str, border=1, align="C", fill=True)
-
-                        if f_pie and os.path.exists(f_pie):
-                            pdf.image(f_pie, x=135, y=y_start_summary, w=145)
-                            os.remove(f_pie)
-
-                    # --- TOP CONTRIBUTORS & DETRACTORS ---
-                    pdf.add_page(orientation='L')
-                    pdf.set_font("Arial", "B", 26)
-                    pdf.set_text_color(0, 0, 0)
-                    pdf.cell(0, 15, "Top Contributors and Detractors", ln=True, align="L")
-                    pdf.ln(5)
-
-                    top_contribs_pdf = calc_df[calc_df['Excess Value'] > 0].nlargest(3, 'Excess Value')
-                    top_detracts_pdf = calc_df[calc_df['Excess Value'] < 0].nsmallest(3, 'Excess Value')
-
-                    box_w = 130
-                    x_start_c = 15
-                    x_start_d = 150
-
-                    y_start = pdf.get_y()
-
-                    # Contributors
-                    pdf.set_xy(x_start_c, y_start)
-                    pdf.set_font("Arial", "B", 16)
-                    pdf.set_text_color(21, 87, 36)
-                    pdf.cell(box_w, 10, "Top Contributors (Positive Excess Value)", ln=False, align="L")
-
-                    y_curr_c = y_start + 15
-                    if not top_contribs_pdf.empty:
-                        for _, row in top_contribs_pdf.iterrows():
                             pdf.set_xy(x_start_c, y_curr_c)
-                            pdf.set_fill_color(242, 248, 242)
-                            pdf.rect(x_start_c, y_curr_c, box_w, 20, 'F')
-                            pdf.set_fill_color(44, 160, 44)
-                            pdf.rect(x_start_c, y_curr_c, 3, 20, 'F')
+                            pdf.set_font("Arial", "I", 12)
+                            pdf.set_text_color(100, 100, 100)
+                            pdf.cell(box_w, 10, "No positive contributors found.", ln=True)
 
-                            pdf.set_xy(x_start_c + 5, y_curr_c + 3)
-                            pdf.set_font("Arial", "B", 12)
-                            pdf.set_text_color(0, 0, 0)
-                            sec_name = str(row.get('Security Name', ''))[:35]
-                            pdf.cell(box_w - 5, 6, f"{row['Ticker']} - {sec_name}", ln=True)
+                        # Detractors
+                        pdf.set_xy(x_start_d, y_start)
+                        pdf.set_font("Arial", "B", 16)
+                        pdf.set_text_color(114, 28, 36)
+                        pdf.cell(box_w, 10, "Top Detractors (Negative Excess Value)", ln=False, align="L")
 
-                            pdf.set_xy(x_start_c + 5, y_curr_c + 10)
-                            pdf.set_font("Arial", "", 11)
-                            pdf.set_text_color(21, 87, 36)
-                            pdf.cell(box_w - 5, 6, f"Excess Return: {row['Difference']:.2%}  |  Excess Value: +${row['Excess Value']:,.2f}", ln=True)
-                            y_curr_c += 25
-                    else:
-                        pdf.set_xy(x_start_c, y_curr_c)
-                        pdf.set_font("Arial", "I", 12)
-                        pdf.set_text_color(100, 100, 100)
-                        pdf.cell(box_w, 10, "No positive contributors found.", ln=True)
+                        y_curr_d = y_start + 15
+                        if not top_detracts_pdf.empty:
+                            for _, row in top_detracts_pdf.iterrows():
+                                pdf.set_xy(x_start_d, y_curr_d)
+                                pdf.set_fill_color(253, 242, 242)
+                                pdf.rect(x_start_d, y_curr_d, box_w, 20, 'F')
+                                pdf.set_fill_color(214, 39, 40)
+                                pdf.rect(x_start_d, y_curr_d, 3, 20, 'F')
 
-                    # Detractors
-                    pdf.set_xy(x_start_d, y_start)
-                    pdf.set_font("Arial", "B", 16)
-                    pdf.set_text_color(114, 28, 36)
-                    pdf.cell(box_w, 10, "Top Detractors (Negative Excess Value)", ln=False, align="L")
+                                pdf.set_xy(x_start_d + 5, y_curr_d + 3)
+                                pdf.set_font("Arial", "B", 12)
+                                pdf.set_text_color(0, 0, 0)
+                                sec_name = str(row.get('Security Name', ''))[:35]
+                                pdf.cell(box_w - 5, 6, f"{row['Ticker']} - {sec_name}", ln=True)
 
-                    y_curr_d = y_start + 15
-            
+                                pdf.set_xy(x_start_d + 5, y_curr_d + 10)
+                                pdf.set_font("Arial", "", 11)
+     
