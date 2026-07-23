@@ -21,8 +21,10 @@ PORTFOLIO_COLS = ["Security Name", "Type", "Sector", "Yield", "Ticker",
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = pd.DataFrame(columns=PORTFOLIO_COLS)
 
-# Per-ticker trade lots {ticker: [{'Purchase Date','Total Cost','Amount'}, ...]}
+# Per-ticker trade lots {ticker: [{'Purchase Date','Adjusted Cost','Original Cost','Current Cost','Amount'}, ...]}
 # captured from the Excel report so returns respect each lot's own purchase date.
+# Storing all three cost fields lets us coalesce (adjusted -> original -> current)
+# so pre-2011/spinoff-reset lots with "Adjusted Cost = 0" are no longer dropped.
 if 'lots' not in st.session_state:
     st.session_state.lots = {}
 
@@ -72,7 +74,15 @@ def standardize_sector(sector, ticker):
     }
     return mapping.get(str(sector).strip(), str(sector).strip())
 
-@st.cache_data
+def _coalesce_cost(lot):
+    """Return the best available cost basis for a lot: adjusted -> original -> current."""
+    for key in ('Adjusted Cost', 'Original Cost', 'Current Cost', 'Total Cost'):
+        v = pd.to_numeric(lot.get(key), errors='coerce')
+        if pd.notna(v) and v > 0:
+            return float(v)
+    return 0.0
+
+@st.cache_data(ttl=3600)
 def fetch_security_details(ticker):
     """Fallback lookup (Yahoo Finance) used ONLY when the uploaded file is missing a field."""
     try:
@@ -101,38 +111,64 @@ def fetch_security_details(ticker):
 
 @st.cache_data(ttl=3600)
 def get_risk_free_rate():
-    """Current US 10-Year Treasury Note yield (^TNX) from Yahoo Finance, returned as a decimal."""
+    """Current US 10-Year Treasury Note yield (^TNX) from Yahoo Finance, returned as a decimal.
+    Defensively flattens the MultiIndex that recent yfinance versions return and sanity-checks
+    the magnitude so a bad feed can never silently poison Alpha/Sharpe with a 0% rate."""
     try:
         data = yf.download("^TNX", period="5d", progress=False, auto_adjust=False)
-        if 'Close' not in data:
+        if data is None or data.empty:
             return 0.0
-        series = data['Close'].dropna()
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        close = data.get('Close')
+        if close is None:
+            return 0.0
+        series = close.dropna()
         if series.empty:
             return 0.0
         latest = float(series.iloc[-1])
         # ^TNX is quoted in percent (e.g. 4.25 = 4.25%); convert to a decimal fraction.
+        # Sanity guard against feeds that return a scaled integer.
+        if latest > 20:
+            latest /= 10.0
         return latest / 100.0
     except Exception:
         return 0.0
 
 def fetch_risk_metrics(ticker, benchmark, start_date, risk_free_rate=0.0, lots=None):
     try:
-        raw_data = yf.download([ticker, benchmark], start=start_date, progress=False, auto_adjust=False)
+        # Handle the case where the ticker IS its own benchmark (e.g. SPY -> SPY).
+        # yf.download deduplicates identical tickers into a single column, which
+        # would otherwise trip the `< 2 columns` guard and drop the position.
+        same = str(ticker).upper() == str(benchmark).upper()
 
-        if 'Adj Close' in raw_data:
-            data = raw_data['Adj Close']
-        elif 'Close' in raw_data:
-            data = raw_data['Close']
+        if same:
+            raw_data = yf.download(ticker, start=start_date, progress=False, auto_adjust=False)
+            if raw_data is None or raw_data.empty:
+                return None
+            if isinstance(raw_data.columns, pd.MultiIndex):
+                raw_data.columns = raw_data.columns.get_level_values(0)
+            px_series = raw_data.get('Adj Close', raw_data.get('Close'))
+            if px_series is None:
+                return None
+            t_data = b_data = px_series.dropna()
         else:
-            return None
+            raw_data = yf.download([ticker, benchmark], start=start_date, progress=False, auto_adjust=False)
+            if 'Adj Close' in raw_data:
+                data = raw_data['Adj Close']
+            elif 'Close' in raw_data:
+                data = raw_data['Close']
+            else:
+                return None
 
-        if data.empty or len(data.columns) < 2: return None
+            if data.empty or len(data.columns) < 2: return None
 
-        t_data = data[ticker].dropna()
-        b_data = data[benchmark].dropna()
+            t_data = data[ticker].dropna()
+            b_data = data[benchmark].dropna()
+
         if t_data.empty or b_data.empty: return None
 
-        # Total return since purchase (dividend/split adjusted via Adj Close).
+        # Total return since purchase (dividend/split/cap-gain adjusted via Adj Close).
         # When the Excel report has multiple trade lots for this ticker, compute a
         # COST-WEIGHTED return where each lot is measured from its OWN purchase date,
         # and value the benchmark as if the same dollars were invested on the same dates.
@@ -141,10 +177,7 @@ def fetch_risk_metrics(ticker, benchmark, start_date, risk_free_rate=0.0, lots=N
             b_cost_wsum = 0.0
             tot_cost = 0.0
             for lot in lots:
-                try:
-                    c = float(lot.get('Total Cost', 0) or 0)
-                except (TypeError, ValueError):
-                    c = 0.0
+                c = _coalesce_cost(lot)   # adjusted -> original -> current
                 d = pd.to_datetime(lot.get('Purchase Date'), errors='coerce')
                 if c <= 0 or pd.isna(d):
                     continue
@@ -240,22 +273,33 @@ with col_upload:
         try:
             df = pd.read_csv(uploaded_file, low_memory=False) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
 
+            # Keep the three Pershing cost fields distinct so we can coalesce later.
+            # Original Total Cost is the *acquisition* dollar amount (never zero for a real lot);
+            # Original Adjusted Cost may be zero on noncovered/pre-2011/spinoff-reset lots;
+            # Current Total Cost is the running adjusted basis after partial sales.
             column_mapping = {
-                'Security Description': 'Security Name',
-                'Security Type': 'Type',
-                'Security Identifier': 'Ticker',
-                'Market Value': 'Amount',
-                'Original Adjusted Cost': 'Total Cost',
-                'Trade Date': 'Purchase Date',
-                'Asset Category': 'Sector',       # Column Z -> Sector
-                'Current Yield': 'Yield',         # Column V -> Yield (dividends)
-                'Yield': 'Yield'
+                'Security Description':   'Security Name',
+                'Security Type':          'Type',
+                'Security Identifier':    'Ticker',
+                'Market Value':           'Amount',
+                'Original Total Cost':    'Original Cost',
+                'Original Adjusted Cost': 'Adjusted Cost',
+                'Current Total Cost':     'Current Cost',
+                'Trade Date':             'Purchase Date',
+                'Asset Category':         'Sector',       # Column Z -> Sector
+                'Current Yield':          'Yield',        # Column V -> Yield (dividends)
+                'Yield':                  'Yield'
             }
 
             if not any(req in df.columns for req in ['Security Identifier', 'Market Value', 'Trade Date']):
                 st.error("Could not find the required columns (Security Identifier, Market Value, Trade Date).")
             else:
                 df = df.rename(columns=column_mapping)
+
+                # Drop Pershing's "Multiple" aggregate rows so we don't double-count
+                # a multi-lot ticker (once as an aggregate, again as its per-lot rows).
+                if 'Taxlot Category' in df.columns:
+                    df = df[df['Taxlot Category'].astype(str).str.upper() != 'MULTIPLE']
 
                 unique_tickers = df['Ticker'].dropna().unique()
 
@@ -273,21 +317,26 @@ with col_upload:
                     df['Sector'] = df['Ticker'].map(lambda x: details_dict.get(x, ('', '', 'Other', 0.0))[2])
                 if 'Yield' not in df.columns:
                     df['Yield'] = df['Ticker'].map(lambda x: details_dict.get(x, ('', '', '', 0.0))[3])
-                if 'Total Cost' not in df.columns:
-                    df['Total Cost'] = 0.0
+
+                # Ensure every cost field exists so downstream coalescing is safe.
+                for c in ('Adjusted Cost', 'Original Cost', 'Current Cost'):
+                    if c not in df.columns:
+                        df[c] = 0.0
 
                 df['Type'] = df['Type'].apply(standardize_type)
                 df['Sector'] = df.apply(lambda row: standardize_sector(row['Sector'], row['Ticker']), axis=1)
 
-                df = df[["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount", "Total Cost", "Purchase Date"]].dropna(subset=["Ticker"])
+                df = df[["Security Name", "Type", "Sector", "Yield", "Ticker", "Amount",
+                        "Adjusted Cost", "Original Cost", "Current Cost", "Purchase Date"]].dropna(subset=["Ticker"])
 
                 if df['Amount'].dtype == 'object':
                     df['Amount'] = df['Amount'].astype(str).str.replace(',', '').str.replace('$', '')
                 df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
 
-                if df['Total Cost'].dtype == 'object':
-                    df['Total Cost'] = df['Total Cost'].astype(str).str.replace(',', '').str.replace('$', '')
-                df['Total Cost'] = pd.to_numeric(df['Total Cost'], errors='coerce').fillna(0)
+                for cost_col in ('Adjusted Cost', 'Original Cost', 'Current Cost'):
+                    if df[cost_col].dtype == 'object':
+                        df[cost_col] = df[cost_col].astype(str).str.replace(',', '').str.replace('$', '')
+                    df[cost_col] = pd.to_numeric(df[cost_col], errors='coerce').fillna(0.0)
 
                 if df['Yield'].dtype == 'object':
                     df['Yield'] = df['Yield'].astype(str).str.replace('%', '').str.replace(',', '')
@@ -301,15 +350,24 @@ with col_upload:
                 # Amount and Total Cost, and returns the single EARLIEST trade date.
                 df['Ticker'] = df['Ticker'].astype(str).str.strip().str.upper()
 
-                # Preserve each individual trade lot (date + cost) BEFORE consolidating,
+                # Row-level coalesced cost for portfolio-level display and consolidation.
+                df['Total Cost'] = df.apply(lambda r: _coalesce_cost(r.to_dict()), axis=1)
+
+                # Preserve each individual trade lot (date + costs) BEFORE consolidating,
                 # so return calculations can weight each lot from its own purchase date.
+                # Reset any prior lot list for tickers in this upload to prevent
+                # duplicate-lot corruption on re-uploads of the same file.
+                for tkr in df['Ticker'].unique():
+                    st.session_state.lots[tkr] = []
                 for tkr, grp in df.groupby('Ticker'):
-                    lot_list = st.session_state.lots.setdefault(tkr, [])
+                    lot_list = st.session_state.lots[tkr]
                     for _, r in grp.iterrows():
                         lot_list.append({
                             'Purchase Date': pd.to_datetime(r['Purchase Date'], errors='coerce'),
-                            'Total Cost': float(r['Total Cost']) if pd.notna(r['Total Cost']) else 0.0,
-                            'Amount': float(r['Amount']) if pd.notna(r['Amount']) else 0.0,
+                            'Adjusted Cost': float(r['Adjusted Cost']) if pd.notna(r['Adjusted Cost']) else 0.0,
+                            'Original Cost': float(r['Original Cost']) if pd.notna(r['Original Cost']) else 0.0,
+                            'Current Cost':  float(r['Current Cost'])  if pd.notna(r['Current Cost'])  else 0.0,
+                            'Amount':        float(r['Amount'])        if pd.notna(r['Amount'])        else 0.0,
                         })
 
                 df = df.groupby('Ticker', as_index=False).agg(
@@ -319,7 +377,7 @@ with col_upload:
                         'Sector':        ('Sector', 'first'),
                         'Yield':         ('Yield', 'first'),
                         'Amount':        ('Amount', 'sum'),         # total of all trades
-                        'Total Cost':    ('Total Cost', 'sum'),     # total cost of all trades
+                        'Total Cost':    ('Total Cost', 'sum'),     # coalesced cost across lots
                         'Purchase Date': ('Purchase Date', 'min'),  # earliest purchase date
                     }
                 )
@@ -360,8 +418,10 @@ with col_manual:
             tkr_norm = str(new_ticker).strip().upper()
             st.session_state.lots.setdefault(tkr_norm, []).append({
                 'Purchase Date': pd.to_datetime(new_date),
-                'Total Cost': float(new_amount),
-                'Amount': float(new_amount),
+                'Adjusted Cost': float(new_amount),
+                'Original Cost': float(new_amount),
+                'Current Cost':  float(new_amount),
+                'Amount':        float(new_amount),
             })
             new_row = pd.DataFrame({
                 "Security Name": [name], "Type": [qtype], "Sector": [sector], "Yield": [div_yield],
@@ -461,7 +521,11 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         st.write("")
         st.subheader("Top Contributors and Detractors")
 
-        calc_df['Excess Value'] = calc_df.get('Total Cost', calc_df['Amount']) * calc_df['Difference']
+        # Excess Value uses cost basis (not current market value) so the sum reconciles
+        # with what the client actually put in vs. what a same-dollar benchmark investment
+        # would have grown to.
+        cost_for_excess = calc_df['Total Cost'].where(calc_df['Total Cost'] > 0, calc_df['Amount'])
+        calc_df['Excess Value'] = cost_for_excess * calc_df['Difference']
         top_contribs = calc_df[calc_df['Excess Value'] > 0].nlargest(3, 'Excess Value')
         top_detracts = calc_df[calc_df['Excess Value'] < 0].nsmallest(3, 'Excess Value')
 
@@ -504,9 +568,17 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
         st.subheader("📊 Portfolio Summary & Sector Allocation")
 
         total_value = calc_df['Amount'].sum()
+        # Cost-basis weights for the return figures so the weighted portfolio return
+        # reconciles with Excess Value / Total Cost. Falls back to market value when a
+        # position has no cost basis (e.g. manually added positions with 0 cost).
+        cost_basis = calc_df['Total Cost'].where(calc_df['Total Cost'] > 0, calc_df['Amount'])
+        total_cost = cost_basis.sum()
+        w_cost = cost_basis / total_cost if total_cost > 0 else calc_df['Amount'] / total_value
+        # Market-value weights for allocation/risk figures (accurate current exposure).
         weights = calc_df['Amount'] / total_value
-        port_weighted_return = (calc_df['Ticker Return'] * weights).sum()
-        bench_weighted_return = (calc_df['Benchmark Return'] * weights).sum()
+
+        port_weighted_return = (calc_df['Ticker Return'] * w_cost).sum()
+        bench_weighted_return = (calc_df['Benchmark Return'] * w_cost).sum()
 
         excess_value = calc_df['Excess Value'].sum()
         excess_str = f"+${excess_value:,.2f}" if excess_value >= 0 else f"-${abs(excess_value):,.2f}"
@@ -887,227 +959,4 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
                     pdf.cell(box_w, 10, "Top Detractors (Negative Excess Value)", ln=False, align="L")
 
                     y_curr_d = y_start + 15
-                    if not top_detracts_pdf.empty:
-                        for _, row in top_detracts_pdf.iterrows():
-                            pdf.set_xy(x_start_d, y_curr_d)
-                            pdf.set_fill_color(253, 242, 242)
-                            pdf.rect(x_start_d, y_curr_d, box_w, 20, 'F')
-                            pdf.set_fill_color(214, 39, 40)
-                            pdf.rect(x_start_d, y_curr_d, 3, 20, 'F')
-
-                            pdf.set_xy(x_start_d + 5, y_curr_d + 3)
-                            pdf.set_font("Arial", "B", 12)
-                            pdf.set_text_color(0, 0, 0)
-                            sec_name = str(row.get('Security Name', ''))[:35]
-                            pdf.cell(box_w - 5, 6, f"{row['Ticker']} - {sec_name}", ln=True)
-
-                            pdf.set_xy(x_start_d + 5, y_curr_d + 10)
-                            pdf.set_font("Arial", "", 11)
-                            pdf.set_text_color(114, 28, 36)
-                            pdf.cell(box_w - 5, 6, f"Excess Return: {row['Difference']:.2%}  |  Excess Value: -${abs(row['Excess Value']):,.2f}", ln=True)
-                            y_curr_d += 25
-                    else:
-                        pdf.set_xy(x_start_d, y_curr_d)
-                        pdf.set_font("Arial", "I", 12)
-                        pdf.set_text_color(100, 100, 100)
-                        pdf.cell(box_w, 10, "No negative detractors found.", ln=True)
-
-                    # --- PAGE 3: PERFORMANCE REPORT HOLDINGS ---
-                    if inc_holdings and len(selected_pdf_cols) > 0:
-                        pdf.add_page(orientation='L')
-                        pdf.set_font("Arial", "B", 26)
-                        pdf.set_text_color(0, 0, 0)
-                        pdf.cell(0, 15, "Performance Report", ln=True, align="L")
-                        pdf.ln(5)
-
-                        base_widths = {
-                            'Security Name': 65, 'Type': 22, 'Sector': 25, 'Ticker': 18, 'Bench': 18,
-                            'Amount': 30, 'P. Date': 25, 'Asset Ret': 24,
-                            'Bench Ret': 24, 'Difference': 26
-                        }
-
-                        col_width_map = {k: base_widths[k] for k in selected_pdf_cols}
-                        x_offset = (297 - sum(col_width_map.values())) / 2
-
-                        def draw_table_headers():
-                            pdf.set_fill_color(27, 79, 49)
-                            pdf.set_text_color(255, 255, 255)
-                            pdf.set_font("Arial", "B", 13)
-                            pdf.set_x(x_offset)
-                            for col in selected_pdf_cols:
-                                pdf.cell(col_width_map[col], 12, col, border=1, align='C', fill=True)
-                            pdf.ln()
-                            pdf.set_text_color(0, 0, 0)
-                            pdf.set_font("Arial", "", 12)
-
-                        draw_table_headers()
-
-                        fill_row = False
-                        for idx, row in calc_df.sort_values(by='Amount', ascending=False).iterrows():
-                            if fill_row: pdf.set_fill_color(242, 248, 242)
-                            else: pdf.set_fill_color(255, 255, 255)
-
-                            date_str = row['Purchase Date'].strftime('%m/%d/%Y') if hasattr(row['Purchase Date'], 'strftime') else str(row['Purchase Date']).split(' ')[0]
-                            sec_name = str(row.get('Security Name', row['Ticker']))
-
-                            wrapped_lines = textwrap.wrap(sec_name, width=22, break_long_words=True)
-                            if len(wrapped_lines) == 0: wrapped_lines = [""]
-
-                            line_height = 8
-                            row_height = line_height * len(wrapped_lines)
-
-                            if pdf.get_y() + row_height > 185:
-                                pdf.add_page(orientation='L')
-                                draw_table_headers()
-                                if fill_row: pdf.set_fill_color(242, 248, 242)
-                                else: pdf.set_fill_color(255, 255, 255)
-
-                            y_start = pdf.get_y()
-
-                            x_curr = x_offset
-                            for col in selected_pdf_cols:
-                                w = col_width_map[col]
-                                pdf.rect(x_curr, y_start, w, row_height, 'DF')
-                                x_curr += w
-
-                            x_curr = x_offset
-                            for col in selected_pdf_cols:
-                                w = col_width_map[col]
-                                pdf.set_xy(x_curr, y_start)
-
-                                if col == 'Security Name':
-                                    pdf.multi_cell(w, line_height, '\n'.join(wrapped_lines), align='C')
-                                elif col == 'Type':
-                                    pdf.cell(w, row_height, str(row.get('Type', '')), align='C')
-                                elif col == 'Sector':
-                                    pdf.cell(w, row_height, str(row.get('Sector', 'Other'))[:15], align='C')
-                                elif col == 'Ticker':
-                                    pdf.set_font("Arial", "B", 12)
-                                    pdf.cell(w, row_height, str(row['Ticker']), align='C')
-                                    pdf.set_font("Arial", "", 12)
-                                elif col == 'Bench':
-                                    pdf.cell(w, row_height, str(row['Benchmark']), align='C')
-                                elif col == 'Amount':
-                                    pdf.cell(w, row_height, f"${row['Amount']:,.2f}", align='R')
-                                elif col == 'P. Date':
-                                    pdf.cell(w, row_height, date_str, align='C')
-                                elif col == 'Asset Ret':
-                                    pdf.cell(w, row_height, f"{row['Ticker Return']:.2%}", align='R')
-                                elif col == 'Bench Ret':
-                                    pdf.cell(w, row_height, f"{row['Benchmark Return']:.2%}", align='R')
-                                elif col == 'Difference':
-                                    diff = row['Difference']
-                                    # Match the dashboard: shade the cell light green / red / grey
-                                    if diff > 0.02: pdf.set_fill_color(192, 226, 192)
-                                    elif diff < -0.02: pdf.set_fill_color(243, 190, 190)
-                                    else: pdf.set_fill_color(217, 217, 217)
-                                    pdf.rect(x_curr, y_start, w, row_height, 'DF')
-                                    pdf.set_xy(x_curr, y_start)
-                                    pdf.set_font("Arial", "B", 12)
-                                    pdf.set_text_color(0, 0, 0)
-                                    pdf.cell(w, row_height, f"{diff:.2%}", align='R')
-                                    pdf.set_font("Arial", "", 12)
-                                x_curr += w
-
-                            pdf.set_y(y_start + row_height)
-                            fill_row = not fill_row
-                        pdf.ln(15)
-
-                    # --- PAGE 4: BAR CHART ---
-                    if inc_bar:
-                        pdf.add_page(orientation='L')
-                        pdf.set_font("Arial", "B", 26)
-                        pdf.cell(0, 15, "Asset vs Benchmark Performance", ln=True, align="L")
-                        pdf.ln(5)
-                        try:
-                            # Using save_plotly_as_jpg unifies the retry logic and fixes Kaleido crashes
-                            fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group', color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
-                            # Shrink the ticker labels (not the plot) as the portfolio grows so none get cut off.
-                            n_bars = chart_melt['Ticker'].nunique()
-                            if n_bars <= 12:
-                                bar_tick_font, bar_angle, bar_bottom = 26, 0, 50
-                            else:
-                                bar_tick_font, bar_angle, bar_bottom = max(9, int(340 / n_bars)), -45, 110
-                            fig_bar_pdf.update_layout(yaxis_tickformat='.2%', margin=dict(l=140, r=20, t=20, b=bar_bottom), legend_title_text='', font=dict(size=26), xaxis=dict(title="", tickfont=dict(size=bar_tick_font), tickangle=bar_angle), yaxis=dict(title="", tickfont=dict(size=26)), legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), paper_bgcolor='white', plot_bgcolor='white')
-
-                            f_bar = save_plotly_as_jpg(fig_bar_pdf, 1400, 650)
-
-                            img_w = 277
-                            x_pos = 10
-                            pdf.image(f_bar, x=x_pos, w=img_w)
-                            os.remove(f_bar)
-                        except Exception as e:
-                            pdf.set_font("Arial", "", 12)
-                            pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
-
-                    # --- PAGE 5: RISK METRICS & CORRELATION MATRIX ---
-                    if inc_risk:
-                        pdf.add_page(orientation='L')
-
-                        pdf.set_font("Arial", "B", 22)
-                        pdf.cell(0, 10, "Risk Summary", ln=True, align="L")
-                        pdf.ln(5)
-
-                        r_box_w = 38
-                        spacing = 4
-                        total_r_w = (r_box_w * 5) + (spacing * 4)
-                        x_r_start = (297 - total_r_w) / 2
-
-                        m_data = [
-                            ("Weighted Alpha", f"{w_alpha:.2%}"),
-                            ("Weighted Beta", f"{w_beta:.2f}"),
-                            ("Weighted Sharpe", f"{w_sharpe:.2f}"),
-                            ("Weighted Std Dev", f"{w_stddev:.2%}"),
-                            ("Dividend Yield", f"{w_yield / 100.0:.2%}")
-                        ]
-
-                        y_boxes_start = pdf.get_y()
-                        for title, val in m_data:
-                            pdf.set_x(x_r_start)
-                            pdf.set_fill_color(27, 79, 49)
-                            pdf.set_text_color(255, 255, 255)
-                            pdf.set_font("Arial", "B", 9)
-                            pdf.cell(r_box_w, 8, title, border=1, align='C', fill=True)
-
-                            pdf.set_xy(x_r_start, y_boxes_start + 8)
-                            pdf.set_fill_color(245, 247, 245)
-                            pdf.set_text_color(0, 0, 0)
-                            pdf.set_font("Arial", "B", 12)
-                            pdf.cell(r_box_w, 10, val, border=1, align='C', fill=True)
-
-                            x_r_start += r_box_w + spacing
-                            pdf.set_y(y_boxes_start)
-
-                        pdf.set_y(y_boxes_start + 18)
-                        pdf.ln(2)
-
-                        if fig_corr is not None and corr_matrix is not None:
-                            try:
-                                fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
-                                n_corr = len(corr_matrix.columns)
-                                corr_font = 12 if n_corr <= 12 else max(7, int(180 / n_corr))
-                                fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=corr_font), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
-                                f_corr = save_plotly_as_jpg(fig_corr_pdf, 1100, 500)
-
-                                img_w = 240
-                                x_pos = (297 - img_w) / 2
-                                current_y = pdf.get_y()
-                                pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
-                                os.remove(f_corr)
-                            except Exception as e:
-                                pdf.set_font("Arial", "", 12)
-                                pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
-
-                    if logo_path and os.path.exists(logo_path):
-                        os.remove(logo_path)
-
-                    pdf_output = pdf.output(dest='S')
-                    pdf_bytes = pdf_output.encode('latin-1') if isinstance(pdf_output, str) else bytes(pdf_output)
-
-                    st.success("PDF generated successfully!")
-                    st.download_button(
-                        label="⬇️ Download Professional PDF Report",
-                        data=pdf_bytes,
-                        file_name=f"{client_name.replace(' ', '_')}_Portfolio_Report.pdf",
-                        mime="application/pdf"
-                    )
+            
