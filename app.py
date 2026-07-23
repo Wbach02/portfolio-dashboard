@@ -981,4 +981,236 @@ if 'results_df' in st.session_state and st.session_state.results_df is not None:
 
                                 pdf.set_xy(x_start_d + 5, y_curr_d + 10)
                                 pdf.set_font("Arial", "", 11)
-     
+                                pdf.set_text_color(114, 28, 36)
+                                pdf.cell(box_w - 5, 6, f"Excess Return: {row['Difference']:.2%}  |  Excess Value: -${abs(row['Excess Value']):,.2f}", ln=True)
+                                y_curr_d += 25
+                        else:
+                            pdf.set_xy(x_start_d, y_curr_d)
+                            pdf.set_font("Arial", "I", 12)
+                            pdf.set_text_color(100, 100, 100)
+                            pdf.cell(box_w, 10, "No negative detractors found.", ln=True)
+
+                        # --- PAGE 3: PERFORMANCE REPORT HOLDINGS ---
+                        if inc_holdings and len(selected_pdf_cols) > 0:
+                            pdf.add_page(orientation='L')
+                            pdf.set_font("Arial", "B", 26)
+                            pdf.set_text_color(0, 0, 0)
+                            pdf.cell(0, 15, "Performance Report", ln=True, align="L")
+                            pdf.ln(5)
+
+                            base_widths = {
+                                'Security Name': 65, 'Type': 22, 'Sector': 25, 'Ticker': 18, 'Bench': 18,
+                                'Amount': 30, 'P. Date': 25, 'Asset Ret': 24,
+                                'Bench Ret': 24, 'Difference': 26
+                            }
+
+                            col_width_map = {k: base_widths[k] for k in selected_pdf_cols}
+                            x_offset = (297 - sum(col_width_map.values())) / 2
+
+                            def draw_table_headers():
+                                pdf.set_fill_color(27, 79, 49)
+                                pdf.set_text_color(255, 255, 255)
+                                pdf.set_font("Arial", "B", 13)
+                                pdf.set_x(x_offset)
+                                for col in selected_pdf_cols:
+                                    pdf.cell(col_width_map[col], 12, col, border=1, align='C', fill=True)
+                                pdf.ln()
+                                pdf.set_text_color(0, 0, 0)
+                                pdf.set_font("Arial", "", 12)
+
+                            draw_table_headers()
+
+                            fill_row = False
+                            for idx, row in calc_df.sort_values(by='Amount', ascending=False).iterrows():
+                                if fill_row: pdf.set_fill_color(242, 248, 242)
+                                else: pdf.set_fill_color(255, 255, 255)
+
+                                date_str = row['Purchase Date'].strftime('%m/%d/%Y') if hasattr(row['Purchase Date'], 'strftime') else str(row['Purchase Date']).split(' ')[0]
+                                sec_name = str(row.get('Security Name', row['Ticker']))
+
+                                wrapped_lines = textwrap.wrap(sec_name, width=22, break_long_words=True)
+                                if len(wrapped_lines) == 0: wrapped_lines = [""]
+
+                                line_height = 8
+                                row_height = line_height * len(wrapped_lines)
+
+                                if pdf.get_y() + row_height > 185:
+                                    pdf.add_page(orientation='L')
+                                    draw_table_headers()
+                                    if fill_row: pdf.set_fill_color(242, 248, 242)
+                                    else: pdf.set_fill_color(255, 255, 255)
+
+                                y_start = pdf.get_y()
+
+                                x_curr = x_offset
+                                for col in selected_pdf_cols:
+                                    w = col_width_map[col]
+                                    pdf.rect(x_curr, y_start, w, row_height, 'DF')
+                                    x_curr += w
+
+                                x_curr = x_offset
+                                for col in selected_pdf_cols:
+                                    w = col_width_map[col]
+                                    pdf.set_xy(x_curr, y_start)
+
+                                    if col == 'Security Name':
+                                        pdf.multi_cell(w, line_height, '\n'.join(wrapped_lines), align='C')
+                                    elif col == 'Type':
+                                        pdf.cell(w, row_height, str(row.get('Type', '')), align='C')
+                                    elif col == 'Sector':
+                                        pdf.cell(w, row_height, str(row.get('Sector', 'Other'))[:15], align='C')
+                                    elif col == 'Ticker':
+                                        pdf.set_font("Arial", "B", 12)
+                                        pdf.cell(w, row_height, str(row['Ticker']), align='C')
+                                        pdf.set_font("Arial", "", 12)
+                                    elif col == 'Bench':
+                                        pdf.cell(w, row_height, str(row['Benchmark']), align='C')
+                                    elif col == 'Amount':
+                                        pdf.cell(w, row_height, f"${row['Amount']:,.2f}", align='R')
+                                    elif col == 'P. Date':
+                                        pdf.cell(w, row_height, date_str, align='C')
+                                    elif col == 'Asset Ret':
+                                        pdf.cell(w, row_height, f"{row['Ticker Return']:.2%}", align='R')
+                                    elif col == 'Bench Ret':
+                                        pdf.cell(w, row_height, f"{row['Benchmark Return']:.2%}", align='R')
+                                    elif col == 'Difference':
+                                        diff = row['Difference']
+                                        # Match the dashboard: shade the cell light green / red / grey
+                                        if diff > 0.02: pdf.set_fill_color(192, 226, 192)
+                                        elif diff < -0.02: pdf.set_fill_color(243, 190, 190)
+                                        else: pdf.set_fill_color(217, 217, 217)
+                                        pdf.rect(x_curr, y_start, w, row_height, 'DF')
+                                        pdf.set_xy(x_curr, y_start)
+                                        pdf.set_font("Arial", "B", 12)
+                                        pdf.set_text_color(0, 0, 0)
+                                        pdf.cell(w, row_height, f"{diff:.2%}", align='R')
+                                        pdf.set_font("Arial", "", 12)
+                                    x_curr += w
+
+                                pdf.set_y(y_start + row_height)
+                                fill_row = not fill_row
+                            pdf.ln(15)
+
+                        # --- PAGE 4: BAR CHART ---
+                        if inc_bar:
+                            pdf.add_page(orientation='L')
+                            pdf.set_font("Arial", "B", 26)
+                            pdf.cell(0, 15, "Asset vs Benchmark Performance", ln=True, align="L")
+                            pdf.ln(5)
+                            try:
+                                # Using save_plotly_as_jpg unifies the retry logic and fixes Kaleido crashes
+                                fig_bar_pdf = px.bar(chart_melt, x='Ticker', y='Return', color='Metric', barmode='group', color_discrete_map={'Ticker Return': '#136207', 'Benchmark Return': '#77DD77'})
+                                # Shrink the ticker labels (not the plot) as the portfolio grows so none get cut off.
+                                n_bars = chart_melt['Ticker'].nunique()
+                                if n_bars <= 12:
+                                    bar_tick_font, bar_angle, bar_bottom = 26, 0, 50
+                                else:
+                                    bar_tick_font, bar_angle, bar_bottom = max(9, int(340 / n_bars)), -45, 110
+                                fig_bar_pdf.update_layout(yaxis_tickformat='.2%', margin=dict(l=140, r=20, t=20, b=bar_bottom), legend_title_text='', font=dict(size=26), xaxis=dict(title="", tickfont=dict(size=bar_tick_font), tickangle=bar_angle), yaxis=dict(title="", tickfont=dict(size=26)), legend=dict(font=dict(size=26), orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), paper_bgcolor='white', plot_bgcolor='white')
+
+                                f_bar = save_plotly_as_jpg(fig_bar_pdf, 1400, 650)
+
+                                img_w = 277
+                                x_pos = 10
+                                pdf.image(f_bar, x=x_pos, w=img_w)
+                                os.remove(f_bar)
+                            except Exception as e:
+                                pdf.set_font("Arial", "", 12)
+                                pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
+
+                        # --- PAGE 5: RISK METRICS & CORRELATION MATRIX ---
+                        if inc_risk:
+                            pdf.add_page(orientation='L')
+
+                            pdf.set_font("Arial", "B", 22)
+                            pdf.cell(0, 10, "Risk Summary", ln=True, align="L")
+                            pdf.ln(5)
+
+                            r_box_w = 38
+                            spacing = 4
+                            total_r_w = (r_box_w * 5) + (spacing * 4)
+                            x_r_start = (297 - total_r_w) / 2
+
+                            m_data = [
+                                ("Weighted Alpha", f"{w_alpha:.2%}"),
+                                ("Weighted Beta", f"{w_beta:.2f}"),
+                                ("Weighted Sharpe", f"{w_sharpe:.2f}"),
+                                ("Weighted Std Dev", f"{w_stddev:.2%}"),
+                                ("Dividend Yield", f"{w_yield / 100.0:.2%}")
+                            ]
+
+                            y_boxes_start = pdf.get_y()
+                            for title, val in m_data:
+                                pdf.set_x(x_r_start)
+                                pdf.set_fill_color(27, 79, 49)
+                                pdf.set_text_color(255, 255, 255)
+                                pdf.set_font("Arial", "B", 9)
+                                pdf.cell(r_box_w, 8, title, border=1, align='C', fill=True)
+
+                                pdf.set_xy(x_r_start, y_boxes_start + 8)
+                                pdf.set_fill_color(245, 247, 245)
+                                pdf.set_text_color(0, 0, 0)
+                                pdf.set_font("Arial", "B", 12)
+                                pdf.cell(r_box_w, 10, val, border=1, align='C', fill=True)
+
+                                x_r_start += r_box_w + spacing
+                                pdf.set_y(y_boxes_start)
+
+                            pdf.set_y(y_boxes_start + 18)
+                            pdf.ln(2)
+
+                            if fig_corr is not None and corr_matrix is not None:
+                                try:
+                                    fig_corr_pdf = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto", labels=dict(color="Correlation"))
+                                    n_corr = len(corr_matrix.columns)
+                                    corr_font = 12 if n_corr <= 12 else max(7, int(180 / n_corr))
+                                    fig_corr_pdf.update_layout(margin=dict(l=100, r=20, t=10, b=100), font=dict(size=corr_font), xaxis_tickangle=-45, paper_bgcolor='white', plot_bgcolor='white')
+                                    f_corr = save_plotly_as_jpg(fig_corr_pdf, 1100, 500)
+
+                                    img_w = 240
+                                    x_pos = (297 - img_w) / 2
+                                    current_y = pdf.get_y()
+                                    pdf.image(f_corr, x=x_pos, y=current_y, w=img_w)
+                                    os.remove(f_corr)
+                                except Exception as e:
+                                    pdf.set_font("Arial", "", 12)
+                                    pdf.cell(0, 10, f"Chart could not be generated. Error details: {e}", ln=True, align="L")
+
+                        if logo_path and os.path.exists(logo_path):
+                            os.remove(logo_path)
+
+                        # --- fpdf / fpdf2 compatibility shim ---
+                        # fpdf2 >= 2.8 removed the `dest` argument; older versions require it.
+                        try:
+                            pdf_output = pdf.output()          # fpdf2 modern
+                        except TypeError:
+                            pdf_output = pdf.output(dest='S')  # legacy fpdf
+
+                        if isinstance(pdf_output, str):
+                            pdf_bytes = pdf_output.encode('latin-1')
+                        else:
+                            pdf_bytes = bytes(pdf_output)
+
+                        # Park the bytes in session_state so the download button
+                        # survives Streamlit's rerun after the click.
+                        st.session_state.pdf_bytes = pdf_bytes
+                        st.session_state.pdf_filename = f"{client_name.replace(' ', '_')}_Portfolio_Report.pdf"
+
+                    st.success("PDF generated successfully!")
+
+                except Exception as e:
+                    # Surface the actual failure instead of dying silently.
+                    st.error(f"PDF generation failed: {type(e).__name__}: {e}")
+                    with st.expander("Show full traceback"):
+                        st.code(traceback.format_exc())
+
+        # Render the download button OUTSIDE the click handler so it persists
+        # across the rerun that clicking it triggers.
+        if st.session_state.get('pdf_bytes'):
+            st.download_button(
+                label="⬇️ Download Professional PDF Report",
+                data=st.session_state.pdf_bytes,
+                file_name=st.session_state.get('pdf_filename', 'Portfolio_Report.pdf'),
+                mime="application/pdf",
+                key="pdf_download"
+            )
